@@ -1,0 +1,22 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.py]
+indent_style = space
+indent_size = 4
+max_line_length = 120
+
+# Prettier reads indent_style and indent_size from here, so these must stay at 2 to
+# match the formatting the existing JSON already has.
+[*.{json,yaml,yml}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+# Two trailing spaces is a hard line break in Markdown.
+trim_trailing_whitespace = false

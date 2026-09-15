@@ -1,0 +1,6 @@
+# Verbatim API captures. Reformatting them would lose the shape the server actually
+# sent, and the test suite already parses every one on each run.
+tests/fixtures/
+
+# Prose is wrapped by hand. Prettier reflows it and buries real edits in churn.
+*.md

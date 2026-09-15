@@ -1,0 +1,18 @@
+# Local Home Assistant for developing this integration.
+#
+# The image tag must match the deployment target and the homeassistant version that
+# pytest-homeassistant-custom-component pins in pyproject.toml. All three move together.
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:2026.9.2
+    container_name: perific-dev-ha
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+    environment:
+      TZ: Europe/Stockholm
+    volumes:
+      - ./dev/config:/config
+      # Read-only so a running HA can never modify the source being developed.
+      # Python skips bytecode caching rather than failing.
+      - ./custom_components/perific:/config/custom_components/perific:ro

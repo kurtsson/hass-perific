@@ -1,0 +1,27 @@
+.env
+.env.*
+
+# Details of the specific installation this is developed against. The rest of the
+# repository is written to be publishable without scrubbing; anything instance-specific
+# goes here instead.
+LOCAL.md
+
+# Reference checkouts — read-only, never part of this project
+.reference/
+
+# Probe output: contains real tokens and MAC addresses
+scripts/probe_out/
+
+# Local HA container state (keep the checked-in config, ignore runtime files)
+dev/config/*
+!dev/config/configuration.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/

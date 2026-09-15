@@ -1,0 +1,39 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Sign in with the account you use in the Perific app.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        },
+        "data_description": {
+          "username": "The email address the Perific account is registered to."
+        }
+      },
+      "reauth_confirm": {
+        "description": "The Perific API is no longer accepting the token for {username}. Enter the password again to sign back in.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the Perific API.",
+      "invalid_auth": "Invalid username or password.",
+      "rate_limited": "The Perific API is rate limiting requests. Wait a few minutes and try again.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This Perific account is already set up.",
+      "reauth_successful": "Successfully signed back in."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "energy_import": {
+        "name": "Energy imported"
+      }
+    }
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Logga in med ditt Perific app konto.",
+        "data": {
+          "username": "Användarnamn",
+          "password": "Lösenord"
+        },
+        "data_description": {
+          "username": "Epostadressen som ditt Perific konto är registrerad med."
+        }
+      },
+      "reauth_confirm": {
+        "description": "Din inloggning för {username} accepteras inte längre, logga in igen för att komma åt Perific API.",
+        "data": {
+          "password": "Lösenord"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Misslyckades att logga in till Perific APIet.",
+      "invalid_auth": "Felaktigt användarnamn eller lösenord.",
+      "rate_limited": "Perific APIet begränsar anropen. Vänta några minuter och försök igen.",
+      "unknown": "Oväntant fel."
+    },
+    "abort": {
+      "already_configured": "Det här Perific kontot är redan konfigurerat.",
+      "reauth_successful": "Inloggningen lyckades igen."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "energy_import": {
+        "name": "Inköpt elektricitet"
+      }
+    }
+  }
+}

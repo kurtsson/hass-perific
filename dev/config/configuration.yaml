@@ -1,0 +1,7 @@
+# Throwaway config for the local development container. Not the real instance's config.
+default_config:
+
+logger:
+  default: warning
+  logs:
+    custom_components.perific: debug

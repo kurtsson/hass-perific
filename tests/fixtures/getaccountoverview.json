@@ -1,0 +1,643 @@
+{
+  "Chargers": [],
+  "Items": [
+    {
+      "ActualItemUserParameters": {},
+      "ClusterId": null,
+      "CreationTime": "2024-10-16T09:18:13",
+      "DeletionTime": null,
+      "FlashSeqNo": 0,
+      "GroupId": null,
+      "ItemCategory": "LocalVirtual",
+      "ItemId": 10001,
+      "ItemState": "Active",
+      "ItemSubType": "ZaptecReporter",
+      "ItemType": "Reporter",
+      "LatestPacketFromItem": {},
+      "MacAddress": "AA:BB:CC:DD:EE:FF",
+      "Name": "Perific Device 1",
+      "SharedDeviceOwner": null,
+      "SystemName": null,
+      "SystemSettings": {},
+      "TimeZone": "Europe/Stockholm",
+      "UserId": 1000001,
+      "UserSettings": {
+        "Specific": {
+          "PartnerId": 3
+        }
+      }
+    },
+    {
+      "ActualItemUserParameters": {},
+      "ClusterId": null,
+      "CreationTime": "2026-06-24T10:16:13",
+      "DeletionTime": null,
+      "FlashSeqNo": 0,
+      "GroupId": null,
+      "ItemCategory": "LocalVirtual",
+      "ItemId": 10002,
+      "ItemState": "Active",
+      "ItemSubType": "ZaptecCharger",
+      "ItemType": "Charger",
+      "LatestPacketFromItem": {},
+      "MacAddress": "AA:BB:CC:DD:EE:FF",
+      "Name": "Perific Device 2",
+      "SharedDeviceOwner": null,
+      "SystemName": null,
+      "SystemSettings": {},
+      "TimeZone": "Europe/Stockholm",
+      "UserId": 1000001,
+      "UserSettings": {
+        "ChargerId": "ZAG030391",
+        "InstallationId": "REDACTED",
+        "ReporterId": "10001"
+      }
+    },
+    {
+      "ActualItemUserParameters": {},
+      "ClusterId": null,
+      "CreationTime": "2026-08-29T15:13:03",
+      "DeletionTime": null,
+      "FlashSeqNo": 0,
+      "GroupId": null,
+      "ItemCategory": "None",
+      "ItemId": 10003,
+      "ItemState": "Active",
+      "ItemSubType": "None",
+      "ItemType": "None",
+      "LatestPacketFromItem": {},
+      "MacAddress": "AA:BB:CC:DD:EE:FF",
+      "Name": "Perific Device 3",
+      "SharedDeviceOwner": null,
+      "SystemName": "Perific Device 3",
+      "SystemSettings": {},
+      "TimeZone": "Europe/Stockholm",
+      "UserId": 1000001,
+      "UserSettings": {}
+    },
+    {
+      "ActualItemUserParameters": {
+        "Cap": {
+          "D": 0,
+          "E": 0,
+          "H": 1,
+          "I": 0,
+          "LAN": false,
+          "RJ12": true,
+          "RJ45": true,
+          "S": 0,
+          "WiFi": true,
+          "extAnt": true
+        },
+        "Dev": {
+          "D": 0,
+          "E": 0,
+          "H": 1,
+          "S": 0
+        },
+        "FW": "4.5.15",
+        "HBaud": 115200,
+        "HW": "4.6",
+        "ItemCategory": "LocalPhysical",
+        "ItemId": 10004,
+        "ItemSubType": "EM2One",
+        "ItemType": "Phase",
+        "Mac": "AA:BB:CC:DD:EE:FF",
+        "Name": "Perific Device 4",
+        "ServerUdpAddr": "phase.device.enegic.com",
+        "ServerUdpPort": 65110,
+        "SystemName": "Perific Device 4",
+        "TimeZone": "Europe/Stockholm",
+        "UserId": 1000001
+      },
+      "ClusterId": null,
+      "CreationTime": "2026-08-29T15:15:23",
+      "DeletionTime": null,
+      "FlashSeqNo": 22120,
+      "GroupId": null,
+      "ItemCategory": "LocalPhysical",
+      "ItemId": 10004,
+      "ItemState": "Active",
+      "ItemSubType": "EM2One",
+      "ItemType": "Phase",
+      "LatestPacketFromItem": {
+        "data": {
+          "dv": 2,
+          "hiavg": [
+            10,
+            7.5,
+            -3.69
+          ],
+          "huavg": [
+            231.6,
+            231.8,
+            236.9
+          ]
+        },
+        "fw": "4.5.15",
+        "hdr": 1002,
+        "iid": 10004,
+        "it": "Phase",
+        "pv": 3,
+        "rssi": -62,
+        "seqno": 3698,
+        "ts": 1789460200000
+      },
+      "MacAddress": "AA:BB:CC:DD:EE:FF",
+      "Name": "Perific Device 4",
+      "SharedDeviceOwner": null,
+      "SystemName": "Perific Device 4",
+      "SystemSettings": {},
+      "TimeZone": "Europe/Stockholm",
+      "UserId": 1000001,
+      "UserSettings": {
+        "phase": {
+          "nodelist": [
+            {
+              "active": 1,
+              "displayseparate": 0,
+              "fuselevel": 16,
+              "icon": {
+                "id": "default",
+                "name": "Standard",
+                "path": "assets/icons/consumerdefault.png"
+              },
+              "includeintotal": 1,
+              "measuredetails": "",
+              "measureinfo": "",
+              "multiplyfactor": 1,
+              "name": "One V2 HAN",
+              "phases": [
+                {
+                  "active": 1
+                },
+                {
+                  "active": 1
+                },
+                {
+                  "active": 1
+                },
+                {
+                  "active": 0
+                }
+              ],
+              "swbinfo": "",
+              "type": "H"
+            }
+          ],
+          "type": "H",
+          "voltage": 230
+        }
+      }
+    }
+  ],
+  "User": {
+    "ActivationTime": "2024-10-16T11:20:16",
+    "Agent": "None",
+    "AgreementAccepted": "2026-09-02T05:02:56",
+    "Capabilities": [
+      {
+        "Description": "Allows the creation of a Monta Settings.",
+        "Id": 10,
+        "MaxValue": null,
+        "Name": "IntegrationMonta"
+      },
+      {
+        "Description": "Allows the creation of a Monta Settings.",
+        "Id": 10,
+        "MaxValue": null,
+        "Name": "IntegrationMonta"
+      },
+      {
+        "Description": "Allows the creation of a Easee Settings.",
+        "Id": 11,
+        "MaxValue": null,
+        "Name": "IntegrationEasee"
+      },
+      {
+        "Description": "Allows the creation of a Easee Settings.",
+        "Id": 11,
+        "MaxValue": null,
+        "Name": "IntegrationEasee"
+      },
+      {
+        "Description": "Allows the creation of a Zaptec Settings.",
+        "Id": 12,
+        "MaxValue": null,
+        "Name": "IntegrationZaptec"
+      },
+      {
+        "Description": "Allows the creation of a Zaptec Settings.",
+        "Id": 12,
+        "MaxValue": null,
+        "Name": "IntegrationZaptec"
+      },
+      {
+        "Description": "Allows the creation of a Amp Guards Settings.",
+        "Id": 13,
+        "MaxValue": null,
+        "Name": "IntegrationChargeAmps"
+      },
+      {
+        "Description": "Allows the creation of a Amp Guards Settings.",
+        "Id": 13,
+        "MaxValue": null,
+        "Name": "IntegrationChargeAmps"
+      },
+      {
+        "Description": "Allows the creation of a OpenReporter Settings.",
+        "Id": 14,
+        "MaxValue": null,
+        "Name": "IntegrationOpenReporter"
+      },
+      {
+        "Description": "Allows the creation of a OpenReporter Settings.",
+        "Id": 14,
+        "MaxValue": null,
+        "Name": "IntegrationOpenReporter"
+      },
+      {
+        "Description": "Allows the creation of a Wallbox Settings.",
+        "Id": 15,
+        "MaxValue": null,
+        "Name": "IntegrationWallbox"
+      },
+      {
+        "Description": "Allows the creation of a Wallbox Settings.",
+        "Id": 15,
+        "MaxValue": null,
+        "Name": "IntegrationWallbox"
+      },
+      {
+        "Description": "Allows the creation of a Autel Settings.",
+        "Id": 16,
+        "MaxValue": null,
+        "Name": "IntegrationAutel"
+      },
+      {
+        "Description": "Allows the creation of a Autel Settings.",
+        "Id": 16,
+        "MaxValue": null,
+        "Name": "IntegrationAutel"
+      },
+      {
+        "Description": "Allows the creation of a Clenergy Settings.",
+        "Id": 17,
+        "MaxValue": null,
+        "Name": "IntegrationClenergy"
+      },
+      {
+        "Description": "Allows the creation of a Clenergy Settings.",
+        "Id": 17,
+        "MaxValue": null,
+        "Name": "IntegrationClenergy"
+      },
+      {
+        "Description": "Allows the creation of a Vourity Settings.",
+        "Id": 18,
+        "MaxValue": null,
+        "Name": "IntegrationVourity"
+      },
+      {
+        "Description": "Allows the creation of a Vourity Settings.",
+        "Id": 18,
+        "MaxValue": null,
+        "Name": "IntegrationVourity"
+      },
+      {
+        "Description": "Allows the creation of a Efuel Settings.",
+        "Id": 19,
+        "MaxValue": null,
+        "Name": "IntegrationEfuel"
+      },
+      {
+        "Description": "Allows the creation of a Efuel Settings.",
+        "Id": 19,
+        "MaxValue": null,
+        "Name": "IntegrationEfuel"
+      },
+      {
+        "Description": "Allows the creation of a Einride Settings",
+        "Id": 20,
+        "MaxValue": null,
+        "Name": "IntegrationEinride"
+      },
+      {
+        "Description": "Allows the creation of a Einride Settings",
+        "Id": 20,
+        "MaxValue": null,
+        "Name": "IntegrationEinride"
+      },
+      {
+        "Description": "Allows the creation of a NexBlue Settings",
+        "Id": 22,
+        "MaxValue": null,
+        "Name": "IntegrationNexBlue"
+      },
+      {
+        "Description": "Allows the creation of a NexBlue Settings",
+        "Id": 22,
+        "MaxValue": null,
+        "Name": "IntegrationNexBlue"
+      },
+      {
+        "Description": "Allows the creation of a go-e Settings",
+        "Id": 24,
+        "MaxValue": null,
+        "Name": "IntegrationGo-e"
+      },
+      {
+        "Description": "Allows the creation of a go-e Settings",
+        "Id": 24,
+        "MaxValue": null,
+        "Name": "IntegrationGo-e"
+      },
+      {
+        "Description": "Capability to integrate with Ampeco",
+        "Id": 27,
+        "MaxValue": null,
+        "Name": "IntegrationAmpeco"
+      },
+      {
+        "Description": "Capability to integrate with Ampeco",
+        "Id": 27,
+        "MaxValue": null,
+        "Name": "IntegrationAmpeco"
+      },
+      {
+        "Description": "Capability to integrate with Ellsy",
+        "Id": 31,
+        "MaxValue": null,
+        "Name": "IntegrationEllsy"
+      },
+      {
+        "Description": "Capability to integrate with Ellsy",
+        "Id": 31,
+        "MaxValue": null,
+        "Name": "IntegrationEllsy"
+      },
+      {
+        "Description": "Capability to integrate with Wevo",
+        "Id": 32,
+        "MaxValue": null,
+        "Name": "IntegrationWevo"
+      },
+      {
+        "Description": "Capability to integrate with Wevo",
+        "Id": 32,
+        "MaxValue": null,
+        "Name": "IntegrationWevo"
+      },
+      {
+        "Description": "Capability to integrate to V2C",
+        "Id": 35,
+        "MaxValue": null,
+        "Name": "IntegrationV2C"
+      },
+      {
+        "Description": "Capability to integrate to V2C",
+        "Id": 35,
+        "MaxValue": null,
+        "Name": "IntegrationV2C"
+      },
+      {
+        "Description": "Capability to create Pair reporters",
+        "Id": 38,
+        "MaxValue": null,
+        "Name": "Pair"
+      },
+      {
+        "Description": "Capability to create Pair reporters",
+        "Id": 38,
+        "MaxValue": null,
+        "Name": "Pair"
+      },
+      {
+        "Description": "Capability to create Connect Go reporters",
+        "Id": 39,
+        "MaxValue": null,
+        "Name": "IntegrationConnectGO"
+      },
+      {
+        "Description": "Capability to create Connect Go reporters",
+        "Id": 39,
+        "MaxValue": null,
+        "Name": "IntegrationConnectGO"
+      },
+      {
+        "Description": "Capability to integrate with DEFA",
+        "Id": 40,
+        "MaxValue": null,
+        "Name": "IntegrationDEFA"
+      },
+      {
+        "Description": "Capability to integrate with DEFA",
+        "Id": 40,
+        "MaxValue": null,
+        "Name": "IntegrationDEFA"
+      },
+      {
+        "Description": "Capability to integrate with eMabler",
+        "Id": 41,
+        "MaxValue": null,
+        "Name": "IntegrationEmabler"
+      },
+      {
+        "Description": "Capability to integrate with eMabler",
+        "Id": 41,
+        "MaxValue": null,
+        "Name": "IntegrationEmabler"
+      },
+      {
+        "Description": "Capability to integrate to Vekto eCharge",
+        "Id": 42,
+        "MaxValue": null,
+        "Name": "IntegrationVektoEcharge"
+      },
+      {
+        "Description": "Capability to integrate to Vekto eCharge",
+        "Id": 42,
+        "MaxValue": null,
+        "Name": "IntegrationVektoEcharge"
+      },
+      {
+        "Description": "Capability to integrate with enua",
+        "Id": 45,
+        "MaxValue": null,
+        "Name": "IntegrationEnua"
+      },
+      {
+        "Description": "Capability to integrate with enua",
+        "Id": 45,
+        "MaxValue": null,
+        "Name": "IntegrationEnua"
+      },
+      {
+        "Description": "Capability to integrate with \"\"Smartladdning by Oddes\"\"",
+        "Id": 46,
+        "MaxValue": null,
+        "Name": "IntegrationOddes"
+      },
+      {
+        "Description": "Capability to integrate with \"\"Smartladdning by Oddes\"\"",
+        "Id": 46,
+        "MaxValue": null,
+        "Name": "IntegrationOddes"
+      },
+      {
+        "Description": "Enables the user to use the solar functionality for our integrations and controlling devices.",
+        "Id": 47,
+        "MaxValue": null,
+        "Name": "Solar"
+      },
+      {
+        "Description": "Enables the user to use the solar functionality for our integrations and controlling devices.",
+        "Id": 47,
+        "MaxValue": null,
+        "Name": "Solar"
+      },
+      {
+        "Description": "Capability to integrate to Virta",
+        "Id": 49,
+        "MaxValue": null,
+        "Name": "IntegrationVirta"
+      },
+      {
+        "Description": "Capability to integrate to Virta",
+        "Id": 49,
+        "MaxValue": null,
+        "Name": "IntegrationVirta"
+      },
+      {
+        "Description": "Capability to integrate to Assemblin Charge",
+        "Id": 50,
+        "MaxValue": null,
+        "Name": "IntegrationAssemblinCharge"
+      },
+      {
+        "Description": "Capability to integrate to Assemblin Charge",
+        "Id": 50,
+        "MaxValue": null,
+        "Name": "IntegrationAssemblinCharge"
+      },
+      {
+        "Description": "Capability to integrate with Zpark",
+        "Id": 51,
+        "MaxValue": null,
+        "Name": "IntegrationZpark"
+      },
+      {
+        "Description": "Capability to integrate with Zpark",
+        "Id": 51,
+        "MaxValue": null,
+        "Name": "IntegrationZpark"
+      },
+      {
+        "Description": "Capability to integrate with ChargePanel Enterprise",
+        "Id": 52,
+        "MaxValue": null,
+        "Name": "IntegrationChargePanelEnterprise"
+      },
+      {
+        "Description": "Capability to integrate with ChargePanel Enterprise",
+        "Id": 52,
+        "MaxValue": null,
+        "Name": "IntegrationChargePanelEnterprise"
+      },
+      {
+        "Description": "Capability to integrate with AssetBook",
+        "Id": 53,
+        "MaxValue": null,
+        "Name": "IntegrationAssetBook"
+      },
+      {
+        "Description": "Capability to integrate with AssetBook",
+        "Id": 53,
+        "MaxValue": null,
+        "Name": "IntegrationAssetBook"
+      },
+      {
+        "Description": "Integration with OCPP Chargers",
+        "Id": 56,
+        "MaxValue": null,
+        "Name": "IntegrationOcpp"
+      },
+      {
+        "Description": "Integration with OCPP Chargers",
+        "Id": 56,
+        "MaxValue": null,
+        "Name": "IntegrationOcpp"
+      },
+      {
+        "Description": "Capability to integrate with ChargeNode ",
+        "Id": 58,
+        "MaxValue": null,
+        "Name": "IntegrationChargeNode"
+      },
+      {
+        "Description": "Capability to integrate with ChargeNode ",
+        "Id": 58,
+        "MaxValue": null,
+        "Name": "IntegrationChargeNode"
+      },
+      {
+        "Description": "Capability to integrate with Waybler",
+        "Id": 60,
+        "MaxValue": null,
+        "Name": "IntegrationWaybler"
+      },
+      {
+        "Description": "Capability to integrate with Waybler",
+        "Id": 60,
+        "MaxValue": null,
+        "Name": "IntegrationWaybler"
+      },
+      {
+        "Description": "Capability to integrate with RE&GO",
+        "Id": 63,
+        "MaxValue": null,
+        "Name": "IntegrationReandGo"
+      },
+      {
+        "Description": "Capability to integrate with RE&GO",
+        "Id": 63,
+        "MaxValue": null,
+        "Name": "IntegrationReandGo"
+      },
+      {
+        "Description": "Allows integrating with Ctek",
+        "Id": 64,
+        "MaxValue": null,
+        "Name": "IntegrationCtek"
+      },
+      {
+        "Description": "Allows integrating with Ctek",
+        "Id": 64,
+        "MaxValue": null,
+        "Name": "IntegrationCtek"
+      },
+      {
+        "Description": "Capability to integrate with Garo",
+        "Id": 68,
+        "MaxValue": null,
+        "Name": "IntegrationGaro"
+      },
+      {
+        "Description": "Capability to integrate with Garo",
+        "Id": 68,
+        "MaxValue": null,
+        "Name": "IntegrationGaro"
+      }
+    ],
+    "CreationTime": "2024-10-16T09:01:59",
+    "Domain": "Example Org",
+    "DomainCountryId": 2,
+    "MainUserId": -1,
+    "MustChangePassword": false,
+    "ParentDomain": "None",
+    "Rights": [],
+    "StripeId": "REDACTED",
+    "UserId": 1000001,
+    "Username": "REDACTED"
+  }
+}
