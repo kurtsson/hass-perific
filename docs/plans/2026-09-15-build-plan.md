@@ -127,7 +127,21 @@ Manual verification: units and `state_class` in Developer Tools → States; a st
 entity (absence means the typing was rejected and the recorder logged why); no issues in Developer
 Tools → Statistics; selectable in the Energy dashboard; still accumulating 48 hours later.
 
-**Status.** `scripts/deploy.sh` is written and syntax-checked but has never been run, so treat its
+**Container half, done.** Home Assistant 2026.9.2 loads the integration, and the config flow was
+driven through the REST API: the form renders, and deliberately wrong credentials come back from the
+real Enegic API as `invalid_auth` on the re-rendered form. Two things only a real runtime could have
+shown. The password field was a plain `str`, which renders as a visible text box — it now uses a
+`TextSelector` in password mode, verified as `"type": "password"` in the served schema. And the
+local container's bind mount was unusable: mounting the component at
+`/config/custom_components/perific` nests a mount inside the `/config` mount, which on Docker
+Desktop for Mac empties itself while the container runs — `RestartCount` 0, host files intact,
+directory empty inside. The component is now copied in by `scripts/dev-sync.sh` and the nested
+mount is gone; verified stable across three consecutive restarts and an idle period.
+
+Completing the flow with real credentials, and watching poll cycles at debug level, still needs
+doing by hand — credentials never enter an agent session.
+
+**Deploy half.** `scripts/deploy.sh` is written and syntax-checked but has never been run, so treat its
 first run as part of the milestone rather than a formality. It adds a rollback the plan didn't
 originally call for: if no matching entity reappears within `RESTART_TIMEOUT`, it puts the previous
 version back and restarts again, so a bad deploy can't leave the instance without a working
@@ -137,8 +151,33 @@ deploy — and `LOCAL.md` lists the two `.env` values still to fill in.
 ## M6 — Second pass
 
 `energy_export` and `power`. Then, as separate decisions: per-phase current and voltage sensors, an
-options flow for the poll interval, the monotonicity guard, `diagnostics.py`, `icons.json`, CI
-(hassfest + HACS validation), and going public as a HACS custom repository.
+options flow for the poll interval, the monotonicity guard, `diagnostics.py`, CI (hassfest + HACS
+validation), and going public as a HACS custom repository.
+
+### The integration logo needs a brands PR
+
+`icons.json` covers **entity** icons and ships inside the integration. The logo beside the
+integration's own name is a different mechanism: the frontend fetches it from
+`brands.home-assistant.io/_/perific/icon.png`, and when that 404s the UI renders an "icon not
+available" placeholder. Nothing a custom component ships can override it — confirmed by grepping the
+frontend bundle, which builds those URLs directly.
+
+Fixing it means a pull request to [`home-assistant/brands`](https://github.com/home-assistant/brands)
+adding `custom_integrations/perific/`:
+
+| File | Requirement |
+|---|---|
+| `icon.png` | 256×256, square |
+| `icon@2x.png` | 512×512, square |
+| `logo.png` | shortest side 128–512 px, landscape preferred |
+| `logo@2x.png` | shortest side 256–512 px |
+
+PNG only, lossless, transparency encouraged, trimmed to minimum empty space. Optional `dark_*`
+variants. **Custom integrations must not use Home Assistant branded imagery** — the brands repo
+rejects anything that could imply this is an official integration.
+
+Sequencing: the brands repository is public, so this lands after the repository goes public rather
+than before. Artwork is a design decision, not a code one.
 
 ## Risks
 

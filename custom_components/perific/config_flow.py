@@ -14,6 +14,11 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .api import (
     EnegicClient,
@@ -29,14 +34,22 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# A plain `str` renders as a visible text box, which would show the password as it is
+# typed. The selector is what marks the field for masking and password autofill.
+_PASSWORD_FIELD = TextSelector(
+    TextSelectorConfig(type=TextSelectorType.PASSWORD, autocomplete="current-password")
+)
+
 STEP_USER_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_USERNAME): str,
-        vol.Required(CONF_PASSWORD): str,
+        vol.Required(CONF_USERNAME): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.TEXT, autocomplete="username")
+        ),
+        vol.Required(CONF_PASSWORD): _PASSWORD_FIELD,
     }
 )
 
-STEP_REAUTH_SCHEMA = vol.Schema({vol.Required(CONF_PASSWORD): str})
+STEP_REAUTH_SCHEMA = vol.Schema({vol.Required(CONF_PASSWORD): _PASSWORD_FIELD})
 
 
 class PerificConfigFlow(ConfigFlow, domain=DOMAIN):

@@ -12,7 +12,10 @@ services:
     environment:
       TZ: Europe/Stockholm
     volumes:
+      # One mount, deliberately. Bind-mounting the component directly at
+      # /config/custom_components/perific nests a mount inside this one, and on Docker
+      # Desktop for Mac the inner mount silently empties while the container runs —
+      # HA then reports "Cannot find integration perific" or fails to import
+      # config_flow, which reads like broken code rather than a broken mount.
+      # scripts/dev-sync.sh copies the component in here instead.
       - ./dev/config:/config
-      # Read-only so a running HA can never modify the source being developed.
-      # Python skips bytecode caching rather than failing.
-      - ./custom_components/perific:/config/custom_components/perific:ro

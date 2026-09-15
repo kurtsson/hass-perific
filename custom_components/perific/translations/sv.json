@@ -22,10 +22,11 @@
       "cannot_connect": "Misslyckades att logga in till Perific APIet.",
       "invalid_auth": "Felaktigt användarnamn eller lösenord.",
       "rate_limited": "Perific APIet begränsar anropen. Vänta några minuter och försök igen.",
-      "unknown": "Oväntant fel."
+      "unknown": "Oväntat fel."
     },
     "abort": {
       "already_configured": "Det här Perific kontot är redan konfigurerat.",
+      "already_in_progress": "Detta konfigureras redan. Slutför den befintliga konfigurationen innan du börjar igen.",
       "reauth_successful": "Inloggningen lyckades igen."
     }
   },

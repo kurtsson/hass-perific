@@ -16,6 +16,7 @@ into HA so it lands in long-term statistics.
 | `docs/api/enegic.md` | API reference. The endpoint and field documentation lives here, not in code comments. |
 | `docs/device-notes.md` | Confirmed field meanings and units, from the probe. |
 | `scripts/probe_api.py` | API probe. Standard library only, so it runs under bare `python3`. Loads `.env` itself. |
+| `scripts/dev-sync.sh` | Copies the component into the local container and restarts it. Run after every edit. |
 | `scripts/deploy.sh` | Ships the component to the real instance and verifies it came back. Final verification only. |
 | `tests/fixtures/` | Redacted real API responses. |
 | `docker-compose.yml` | Local HA for testing. Image pinned to the real instance's version. |
@@ -189,17 +190,29 @@ scope; `CONTEXT.md` explains why, so it doesn't get re-litigated.
 ## Running things
 
 **Local Home Assistant, via `docker compose up`** — this is the normal target. HA on
-`http://localhost:8123`, with `custom_components/perific/` bind-mounted into its config and
-`dev/config/` holding a throwaway configuration. The image is pinned to the same HA version as the
-real instance, so what passes locally is representative.
+`http://localhost:8123`, with `dev/config/` holding a throwaway configuration. The image is pinned
+to the same HA version as the real instance, so what passes locally is representative.
 
-A custom integration is imported into HA's Python process, so there is **no hot reload**: after an
-edit, `docker compose restart homeassistant`.
+A custom integration is imported into HA's Python process, so there is **no hot reload**. The
+component is also not bind-mounted, so every edit needs a copy as well as a restart — both are
+`scripts/dev-sync.sh`.
 
 ```
 docker compose up -d                       # start local HA
-docker compose restart homeassistant       # after editing the component
+./scripts/dev-sync.sh                      # after editing the component: copy, then restart
 docker compose logs -f homeassistant       # watch coordinator polls at debug level
+```
+
+**The component is copied in, not mounted, and that is deliberate.** Bind-mounting it at
+`/config/custom_components/perific` nests a mount inside the `/config` mount, and on Docker Desktop
+for Mac the inner mount silently empties — not only across `docker compose restart` but while the
+container sits running, with `RestartCount` still 0 and the host files untouched. HA then reports
+`Cannot find integration perific`, or `No module named 'custom_components.perific.config_flow'` if
+it emptied after startup. Both read like broken code rather than a broken mount, so if the
+integration vanishes, check what HA can actually see before debugging anything else:
+
+```
+docker compose exec homeassistant ls /config/custom_components/perific
 ```
 
 **Deploying to the real instance** is `scripts/deploy.sh`, and it is for final verification only —

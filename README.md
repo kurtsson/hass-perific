@@ -42,7 +42,7 @@ Tokens are valid for about a year. When one expires, Home Assistant prompts you 
 
 ```bash
 docker compose up -d                       # Home Assistant on http://localhost:8123
-docker compose restart homeassistant       # after editing the integration
+./scripts/dev-sync.sh                      # after editing the integration: copy in, restart
 docker compose logs -f homeassistant       # debug logging is on for this component
 
 pytest

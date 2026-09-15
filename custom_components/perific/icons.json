@@ -1,0 +1,9 @@
+{
+  "entity": {
+    "sensor": {
+      "energy_import": {
+        "default": "mdi:transmission-tower-import"
+      }
+    }
+  }
+}

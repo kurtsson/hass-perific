@@ -26,6 +26,7 @@
     },
     "abort": {
       "already_configured": "This Perific account is already set up.",
+      "already_in_progress": "Setup for this Perific account is already underway. Finish or close the open dialog first.",
       "reauth_successful": "Successfully signed back in."
     }
   },
