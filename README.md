@@ -69,6 +69,25 @@ PERIFIC_USERNAME=...
 PERIFIC_PASSWORD=...
 ```
 
+### Deploying
+
+`scripts/deploy.sh` packages the component, ships it over SSH, swaps it in atomically, restarts
+Home Assistant through its REST API, and rolls back if the entities don't come back. It is for
+final verification against a real instance — long-term statistics accumulating over days is the one
+thing the local container can't prove. Never iterate against a live instance with it.
+
+It needs four more keys in the same `.env`:
+
+```
+HA_URL=http://homeassistant.local     # through whatever fronts it; not necessarily :8123
+HA_TOKEN=...                          # Profile -> Long-lived access tokens
+HA_SSH=user@homeassistant.local
+HA_CONFIG_DIR=/path/to/ha/config      # the host path bind-mounted to /config
+```
+
+Optionally `HA_VERIFY_ENTITY` (default `energy_import`), matched against entity IDs to decide
+whether the deploy worked, and `RESTART_TIMEOUT` (default 180 seconds).
+
 ## Documentation
 
 | | |

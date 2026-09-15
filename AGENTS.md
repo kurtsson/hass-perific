@@ -16,6 +16,7 @@ into HA so it lands in long-term statistics.
 | `docs/api/enegic.md` | API reference. The endpoint and field documentation lives here, not in code comments. |
 | `docs/device-notes.md` | Confirmed field meanings and units, from the probe. |
 | `scripts/probe_api.py` | API probe. Standard library only, so it runs under bare `python3`. Loads `.env` itself. |
+| `scripts/deploy.sh` | Ships the component to the real instance and verifies it came back. Final verification only. |
 | `tests/fixtures/` | Redacted real API responses. |
 | `docker-compose.yml` | Local HA for testing. Image pinned to the real instance's version. |
 | `dev/config/` | Throwaway HA configuration for the local container. Not the real instance's config. |

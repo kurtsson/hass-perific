@@ -127,6 +127,13 @@ Manual verification: units and `state_class` in Developer Tools → States; a st
 entity (absence means the typing was rejected and the recorder logged why); no issues in Developer
 Tools → Statistics; selectable in the Energy dashboard; still accumulating 48 hours later.
 
+**Status.** `scripts/deploy.sh` is written and syntax-checked but has never been run, so treat its
+first run as part of the milestone rather than a formality. It adds a rollback the plan didn't
+originally call for: if no matching entity reappears within `RESTART_TIMEOUT`, it puts the previous
+version back and restarts again, so a bad deploy can't leave the instance without a working
+component. Both halves of the milestone are still outstanding — the container run and the real
+deploy — and `LOCAL.md` lists the two `.env` values still to fill in.
+
 ## M6 — Second pass
 
 `energy_export` and `power`. Then, as separate decisions: per-phase current and voltage sensors, an
