@@ -7,6 +7,48 @@ feeds them to the Energy dashboard and long-term statistics.
 
 > **Early development.** Not installable yet.
 
+## Why this exists
+
+I'm Martin Kurtsson ([@kurtsson](https://github.com/kurtsson)), and I wrote this for my own house.
+
+The Perific app is good at showing what the meter is doing right now. What it doesn't do is keep the
+history — on a free account the detail ages out, so a question like *"how did this October compare
+with last October?"* isn't one I could answer.
+
+Home Assistant can, and the mechanism is worth knowing about before you commit to it. The recorder
+purges detailed state history after a few days, but the hourly `statistics` table it compiles
+alongside is never purged — it is designed to be kept indefinitely. So once the meter is feeding
+Home Assistant, every hour of every year stays queryable, on hardware you control and in a database
+you can back up. Long-term retention is the point of this integration; the live readings are a
+by-product of getting there.
+
+That only works if the sensors are typed correctly. Home Assistant decides whether to record
+statistics from a sensor's `device_class`, `state_class` and unit, and when the combination is wrong
+it declines and logs a warning — the integration appears to work, entities update, and no history
+accumulates. Getting that right, and proving it against a real device, is most of what this project
+is.
+
+## What it does
+
+The Perific One reads your electricity meter's HAN port and reports to Enegic's cloud. This
+integration polls that cloud API and publishes ten sensors for the meter: cumulative import and
+export energy, live import and export power, and per-phase current and voltage. They feed the Energy
+dashboard, long-term statistics, history and automations like anything else in Home Assistant.
+
+What it can't do:
+
+- **No solar production.** The HAN port only sees the grid connection point, so you get net import
+  and export, not what your panels produced. Use your inverter's own integration for that.
+- **No local access.** The device pushes to Enegic's servers, so everything here goes through their
+  cloud. There is no LAN API to talk to, and the readings are therefore only as fresh as the poll
+  interval allows.
+- **Not fast enough for load balancing.** The device reports roughly every 10 seconds, but polling
+  a cloud API that hard isn't reasonable and its rate limits are undocumented. Treat this as
+  monitoring and history, not as a control loop.
+
+This is an unofficial, personal project. It is not affiliated with, endorsed by, or supported by
+Perific or Enegic, and it relies on an undocumented API that they are free to change.
+
 ## Sensors
 
 | Sensor | Unit | Status | Notes |
@@ -31,9 +73,6 @@ There is deliberately **no net-energy sensor**. Net can decrease, so it cannot b
 `TOTAL_INCREASING` counter without every downward move reading as a meter reset; the Energy
 dashboard derives net from import and export itself.
 
-Solar production is not available — the HAN port only sees the grid connection point. Use your
-inverter's own integration for that.
-
 ## Requirements
 
 - Home Assistant 2026.9.2 or newer
@@ -55,6 +94,31 @@ button. The energy registers only advance once a minute, so polling faster buys 
 real-time bucket the power and current sensors read moves every ~10 seconds, so a shorter interval
 does make those fresher. The API's rate limits are undocumented and unmeasured, which is why the
 floor is 15 seconds rather than the device's own 10 — lower it gradually.
+
+### Energy dashboard
+
+Under **Settings → Dashboards → Energy**, open the grid connection to get *Configure grid
+connection*, and fill it in like this:
+
+| Field in the dialog | Sensor to pick |
+|---|---|
+| Energy imported from grid | **Energy imported** |
+| Energy exported to grid | **Energy exported** |
+| Type of power measurement | **Two sensors** |
+| → Power imported from grid | **Power imported** |
+| → Power exported to grid | **Power exported** |
+
+The power half is optional — leave it on *No power sensor* and the dashboard still works, just
+without the live view. Choosing **Two sensors** is what suits this integration: the meter accounts
+per phase, so import and export can both be non-zero at the same instant, and the other modes assume
+a single sensor that is positive one way and negative the other. Home Assistant creates its own
+helper sensor from the pair and says so in the dialog.
+
+Entity names follow your Home Assistant language, so on a Swedish instance these appear as *Inköpt
+elektricitet*, *Såld elektricitet*, *Inköpt effekt* and *Såld effekt*.
+
+Cost tracking is independent of this integration — point it at whatever price entity you already
+have, such as a Nord Pool sensor.
 
 ## Development
 

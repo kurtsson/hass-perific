@@ -252,3 +252,9 @@ than before. Artwork is a design decision, not a code one.
 `scripts/deploy.sh` puts the integration on the real instance, it configures from the UI with
 username and password, `energy_import` appears with the correct unit and a statistics graph, it's
 selectable in the Energy dashboard, and hourly statistics are still accumulating 48 hours later.
+
+All of that holds except the last. The deploy runs clean and the config entry reports `loaded`; the
+Energy dashboard shows import and export under *Configure grid connection*, and the power pair is
+accepted by its two-sensor mode, which builds its own net-power helper from them. What remains is
+only the wait: hourly statistics still accumulating two days on. Configuring it is now documented in
+`README.md`, since the dialog's two-sensor mode is the part that is not obvious.
