@@ -146,37 +146,50 @@ most phases should flip.
 They did here — `hwi` and `hwo` both increased, because the meter accounts per phase and directions
 differed between phases. Don't treat import and export as mutually exclusive.
 
-## Power — the planned source does not work
+## `hwpi` / `hwpo` are per-phase kWh for the bucket period — confirmed
 
-`docs/specs/perific-integration.md` specifies the power sensor as `hwpi` / `hwpo` summed and scaled
-from kW to W. That is not viable, for two independent reasons.
+`docs/specs/perific-integration.md` originally specified the power sensor as `hwpi` / `hwpo` summed
+and scaled from kW to W. They are not power.
 
-**They aren't in the real-time or minute buckets.** Only hour and day. A power sensor built on them
-would report an hour-old value.
+A capture taken with the vendor app open beside it settles it. `PhaseDay` carried
+`hwpi = [9.781, 5.312, 1.25]` and `hwpo = [2.766, 4.012, 5.198]`:
 
-**They probably aren't power.** `PhaseDay` gave `hwpi: [13.819, 8.229, 1.504]`. Read as kW, L1 would
-be 13.8 kW — 59 A at 232 V — but that day's `himax` for L1 was 17.1 A, or 3.97 kW. Read instead as
-**kWh consumed per phase during the bucket period**, the numbers work: 23.55 kWh imported across
-Sept 14, and 0.754 kWh during the 09:00 hour. That reading also requires the aggregate buckets'
-`hwi` to be the register at the *end* of the period, which independently reconciles the day and hour
-values. **Inferred from one capture, not confirmed.**
+| | `sum()` | App |
+|---|---|---|
+| `hwpi` | 16.343 kWh | "bought yesterday" 16.3 |
+| `hwpo` | 11.976 kWh | "sold yesterday" 12 |
 
-The decisive test, for a later probe: capture two consecutive hour packets and check whether
+Read as kW instead, L1 would have been 9.8 kW — 42 A at 233 V, against a 16 A fuse.
+
+Two further things fall out of the same capture:
+
+- **`ts` is the start of the period, and `hwi` / `hwo` are the register at its end.** The `PhaseDay`
+  bucket served by `/getlatestpackets` is the last *completed* day, not the current one.
+- **"Today" is a subtraction.** `hwi(PhaseMinute) − hwi(PhaseDay)` gave 10.180 kWh against the app's
+  "bought today" 10.2, and the export pair gave 0.002 against 0. Nothing in the API reports a
+  running daily total.
+
+## Power is `Σ hiavg × huavg`, and that is what the app shows
+
+No bucket carries a power field. The product of the per-phase signed current and voltage is what the
+vendor's own client displays:
 
 ```
-hwi(hour N+1) - hwi(hour N)  ==  sum(hwpi(hour N+1))
+hiavg = [ 1.5, 1.5, 0.7 ] A     huavg = [ 235.8, 235.6, 237.3 ] V
+                                ->  873 W     app: "buying right now 0.87 kW"
 ```
 
-`python3 scripts/probe_api.py --wait 3700` crosses an hour boundary and produces both.
+All three phases positive, and the app's "selling right now" read zero. Against the energy registers
+as ground truth over a minute, the same product came within 1.0% on import and 2.1% on export while
+both directions were active at once.
 
-Power is an M6 sensor, so nothing is blocked. Two candidate sources when it arrives:
-
-1. **Derive from the `PhaseMinute` register deltas** — real power, averaged over the poll interval,
-   requires keeping the previous reading. Preferred.
-2. **Signed `Σ hiavg × huavg` from `PhaseRealTime`** — instantaneous but *apparent* power in VA. It
-   matched to 0.3% here, which only says the power factor was ~1 at that moment with that load.
+Strictly this is *apparent* power. The agreement says the power factor was near 1 in these captures,
+not that it always is, so expect it to read slightly high under a reactive load. It is the only
+instantaneous source available: deriving power from `PhaseMinute` register deltas would average over
+the poll interval instead, which is a different measurement.
 
 ## Rate limits
 
-Still unmeasured. The probe's four requests drew no `429` and no throttling, which says nothing
-about the real ceiling. Keep polling slowly.
+Still unmeasured. The probe's requests drew no `429` and no throttling, which says nothing about the
+real ceiling. The poll interval is configurable with a 15 s floor, below the 60 s default but above
+the device's own ~10 s cadence; treat anything aggressive as unexplored.

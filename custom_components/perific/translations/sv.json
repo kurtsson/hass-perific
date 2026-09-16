@@ -30,10 +30,50 @@
       "reauth_successful": "Inloggningen lyckades igen."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "description": "Hur ofta Perific APIet ska läsas av. Energiregistren uppdateras bara en gång i minuten; realtidsdatan uppdateras var tionde sekund, så ett kortare intervall ger enbart färskare effekt- och strömvärden. APIets gränser är odokumenterade, så sänk värdet försiktigt.",
+        "data": {
+          "scan_interval": "Avläsningsintervall"
+        },
+        "data_description": {
+          "scan_interval": "Sekunder mellan avläsningar."
+        }
+      }
+    }
+  },
   "entity": {
     "sensor": {
       "energy_import": {
         "name": "Inköpt elektricitet"
+      },
+      "energy_export": {
+        "name": "Såld elektricitet"
+      },
+      "power_import": {
+        "name": "Inköpt effekt"
+      },
+      "power_export": {
+        "name": "Såld effekt"
+      },
+      "current_l1": {
+        "name": "Ström L1"
+      },
+      "current_l2": {
+        "name": "Ström L2"
+      },
+      "current_l3": {
+        "name": "Ström L3"
+      },
+      "voltage_l1": {
+        "name": "Spänning L1"
+      },
+      "voltage_l2": {
+        "name": "Spänning L2"
+      },
+      "voltage_l3": {
+        "name": "Spänning L3"
       }
     }
   }

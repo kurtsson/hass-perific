@@ -12,8 +12,20 @@ feeds them to the Energy dashboard and long-term statistics.
 | Sensor | Unit | Status | Notes |
 |---|---|---|---|
 | Energy imported | kWh | ✅ | Cumulative. Use as *grid consumption* in the Energy dashboard. |
-| Energy exported | kWh | planned | Cumulative. Use as *return to grid*. |
-| Power | W | planned | Derived from consecutive energy readings — the API exposes no instantaneous power. |
+| Energy exported | kWh | ✅ | Cumulative. Use as *return to grid*. |
+| Power imported | W | ✅ | Live. Use as *grid consumption* under the dashboard's two-sensor power mode. |
+| Power exported | W | ✅ | Live. The matching *return to grid* sensor. |
+| Current L1–L3 | A | ✅ | Signed: negative means that phase is exporting. |
+| Voltage L1–L3 | V | ✅ | Diagnostic. |
+
+Import and export are separate sensors rather than one signed value because the meter accounts per
+phase, so both can be non-zero at the same moment — one phase exporting while another imports. A net
+figure would hide that, and Home Assistant's Energy dashboard asks for the pair anyway.
+
+The API publishes no power field. The power sensors are `Σ (current × voltage)` across the phases,
+which is what the Perific app itself displays; it reconciles with the energy registers to within a
+few percent. Strictly it is apparent power, so expect it to read slightly high under a poor power
+factor.
 
 There is deliberately **no net-energy sensor**. Net can decrease, so it cannot be a
 `TOTAL_INCREASING` counter without every downward move reading as a meter reset; the Energy
@@ -37,6 +49,12 @@ Add the integration from **Settings → Devices & Services → Add Integration**
 Perific username and password. Nothing goes in `configuration.yaml`.
 
 Tokens are valid for about a year. When one expires, Home Assistant prompts you to sign in again.
+
+**Poll interval.** The default is 60 seconds, changeable under the integration's **Configure**
+button. The energy registers only advance once a minute, so polling faster buys nothing there; the
+real-time bucket the power and current sensors read moves every ~10 seconds, so a shorter interval
+does make those fresher. The API's rate limits are undocumented and unmeasured, which is why the
+floor is 15 seconds rather than the device's own 10 — lower it gradually.
 
 ## Development
 
@@ -72,9 +90,21 @@ PERIFIC_PASSWORD=...
 ### Deploying
 
 `scripts/deploy.sh` packages the component, ships it over SSH, swaps it in atomically, restarts
-Home Assistant through its REST API, and rolls back if the entities don't come back. It is for
-final verification against a real instance — long-term statistics accumulating over days is the one
-thing the local container can't prove. Never iterate against a live instance with it.
+Home Assistant through its REST API, and rolls back if the integration doesn't load again. It is
+for final verification against a real instance — long-term statistics accumulating over days is the
+one thing the local container can't prove. Never iterate against a live instance with it.
+
+How the swap works is not incidental. Home Assistant reads `<dir>/manifest.json` for **every**
+directory in `custom_components/`, including ones whose names begin with a dot — and such a name
+resolves to the empty module `custom_components.`, which fails the scan for every custom integration
+on the instance. So the new version is unpacked into a holding directory whose manifest sits one
+level deeper, where the scan skips it, and moved into place with a rename inside the same directory
+so the live component is never half-written. The script refuses to finish if it finds a dotted
+directory left behind.
+
+The previous version is kept in `$HOME/.perific-deploy` on the remote, not under the config
+directory, which on a container install is often not writable by the SSH user even when
+`custom_components/` is. Override with `HA_DEPLOY_DIR`.
 
 It needs four more keys in the same `.env`:
 
@@ -85,8 +115,13 @@ HA_SSH=user@homeassistant.local
 HA_CONFIG_DIR=/path/to/ha/config      # the host path bind-mounted to /config
 ```
 
-Optionally `HA_VERIFY_ENTITY` (default `energy_import`), matched against entity IDs to decide
-whether the deploy worked, and `RESTART_TIMEOUT` (default 180 seconds).
+Success is judged by the config entry reaching the `loaded` state, which is language-independent.
+Entity IDs are not: they are built from translated names, so on a Swedish instance the import sensor
+is `sensor.<device>_inkopt_elektricitet`, with no `energy_import` anywhere in it.
+
+Optionally `HA_DEPLOY_DIR` (default `$HOME/.perific-deploy` on the remote), `HA_VERIFY_ENTITY`, an
+extra substring that must appear in some entity ID (empty by default), and `RESTART_TIMEOUT`
+(default 180 seconds).
 
 ## Documentation
 

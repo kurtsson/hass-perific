@@ -7,15 +7,16 @@ The mapping from client exceptions onto Home Assistant's is in
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 # ItemPackets parameterises the coordinator's base class, so it is needed at runtime.
 from .api import ItemPackets, PerificAuthError, PerificError, PerificRateLimitError
-from .const import DOMAIN, SCAN_INTERVAL
+from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -26,6 +27,12 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 type PerificConfigEntry = ConfigEntry[PerificCoordinator]
+
+
+def scan_interval(entry: PerificConfigEntry) -> timedelta:
+    """Read the poll interval off the entry, falling back to the default."""
+    seconds = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+    return timedelta(seconds=seconds)
 
 
 class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
@@ -45,7 +52,7 @@ class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
             _LOGGER,
             config_entry=entry,
             name=DOMAIN,
-            update_interval=SCAN_INTERVAL,
+            update_interval=scan_interval(entry),
             # The models compare by value, so listeners only wake on a real change.
             always_update=False,
         )

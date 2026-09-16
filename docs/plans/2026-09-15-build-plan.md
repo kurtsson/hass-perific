@@ -105,7 +105,7 @@ pure client tests.
 The entity lands as `sensor.perific_device_4_energy_imported`, from `has_entity_name` plus the
 device name. The tests look it up by unique ID instead of hardcoding that.
 
-## M5 — Verify locally, then deploy
+## M5 — Verify locally, then deploy ✅ (bar the 48-hour check)
 
 First in the local container: complete the config flow against the real account, watch several poll
 cycles at debug level. Everything except statistics accumulating over days can be proven here.
@@ -141,18 +141,76 @@ mount is gone; verified stable across three consecutive restarts and an idle per
 Completing the flow with real credentials, and watching poll cycles at debug level, still needs
 doing by hand — credentials never enter an agent session.
 
-**Deploy half.** `scripts/deploy.sh` is written and syntax-checked but has never been run, so treat its
-first run as part of the milestone rather than a formality. It adds a rollback the plan didn't
-originally call for: if no matching entity reappears within `RESTART_TIMEOUT`, it puts the previous
-version back and restarts again, so a bad deploy can't leave the instance without a working
-component. Both halves of the milestone are still outstanding — the container run and the real
-deploy — and `LOCAL.md` lists the two `.env` values still to fill in.
+**Statistics, proven in the container.** The recorder registered
+`sensor.onerj12_inkopt_elektricitet` in `statistics_meta` with `has_sum = 1`, `has_mean` unset and
+unit `kWh`, and `statistics_short_term` shows `sum` accumulating off the counter — 0 → 0.036 → 0.099
+→ 0.161 kWh across four five-minute rows. So the typing is accepted rather than silently declined,
+which is the failure this milestone exists to rule out. Querying `dev/config/home-assistant_v2.db`
+directly is the cheapest way to check it; the entity's own log lines say nothing either way.
+
+The hourly `statistics` table — the one purging never touches, and therefore the one the whole
+year-over-year goal rests on — compiled its first row at the following hour boundary: 0.324 kWh
+imported. Export compiled 0.0 kWh, correctly, because the capture hour was after dark; the export
+sensor's statistics path has not yet been exercised with a non-zero delta.
+
+`energy_export` was added before the deploy rather than after it, so that the real instance is
+touched once instead of twice. Both sensors read correctly against the live account:
+248726.347 kWh imported, 18058.474 kWh exported, both `energy` / `total_increasing` / kWh.
+
+**The rest of M6's sensors came forward for the same reason.** `power_import`, `power_export`,
+`current_l1..3`, `voltage_l1..3` and the options flow are all in, so the first deploy carries the
+whole set. The push for this was live power, which the vendor app shows and the integration did not.
+
+A capture taken beside the app settled what the plan had left open. `hwpi` / `hwpo` are per-phase
+kWh for the bucket period, not power — `sum(hwpi)` 16.343 against the app's 16.3 — which retires the
+`--wait 3700` probe M2 proposed. And `Σ hiavg × huavg` is precisely what the app displays, 873 W
+computed against 0.87 kW shown, which reverses the spec's rejection of it. `docs/device-notes.md`
+carries both, and `docs/specs/perific-integration.md` records why the decision changed.
+
+**Deploy half.** The first run broke the instance, which is exactly why the plan called for treating
+it as part of the milestone rather than a formality. Two bugs, both in the script:
+
+- **The backup was staged inside `custom_components/`.** Home Assistant's `_get_custom_components`
+  iterates every directory there with no filtering, so `.perific-old` was imported as
+  `custom_components..perific-old`, whose parent package is the empty-named `custom_components.` —
+  `ModuleNotFoundError: No module named 'custom_components.'`. Both directories also carry the same
+  `"domain": "perific"`, so they collide in the `{integration.domain: integration}` dict and the
+  broken one can win. The new version now unpacks into a holding directory whose manifest sits one
+  level deeper — `resolve_from_root` skips a directory with no `manifest.json` before importing
+  anything — and moves into place with a rename inside `custom_components/`, which keeps the swap
+  atomic. The script refuses to finish if it finds a dotted directory left behind.
+- **The backup could not be written where the second attempt put it.** `$HA_CONFIG_DIR` is not
+  writable by the SSH user on this instance, though `custom_components/` inside it is. The previous
+  version goes to `$HOME/.perific-deploy` instead, overridable with `HA_DEPLOY_DIR`.
+- **Verification matched an entity ID that can never exist.** The default was `energy_import`, but
+  entity IDs are built from *translated* names, so on this Swedish instance the sensor is
+  `sensor.onerj12_inkopt_elektricitet`. The check would always have timed out and rolled back a
+  good deploy. Success is now the config entry reaching `loaded`, read from
+  `/api/config/config_entries/entry?domain=perific`, which no language affects.
+
+- **Cleanup could fail a deploy that had already succeeded.** `rmdir` on the holding directory ran
+  after the rename, found it non-empty and aborted under `set -e`, leaving the new component in
+  place with Home Assistant never restarted — the worst moment to stop. It is now `rm -rf || true`,
+  and packaging passes `--no-xattrs` so macOS provenance attributes stop reaching GNU tar's pax
+  parser on the far end.
+
+The deploy succeeds now, and the config entry reports `loaded`. None of these four would have
+surfaced without running it against a real instance: the container shares neither the permission
+model, the language, nor the tar implementation. The rollback path has still never been exercised —
+every failure came before the verification loop.
+
+Worth keeping in mind for anything that touches a deployed component: Home Assistant runs as root
+and writes `__pycache__` into it, and unlinking a file needs write permission on its *parent*
+directory. So the SSH user cannot delete those, and the script moves directories aside rather than
+removing them.
 
 ## M6 — Second pass
 
-`energy_export` and `power`. Then, as separate decisions: per-phase current and voltage sensors, an
-options flow for the poll interval, the monotonicity guard, `diagnostics.py`, CI (hassfest + HACS
-validation), and going public as a HACS custom repository.
+The monotonicity guard, `diagnostics.py`, CI (hassfest + HACS validation), and going public as a
+HACS custom repository.
+
+`energy_export`, both power sensors, the per-phase sensors and the options flow all moved into M5 —
+see that milestone.
 
 ### The integration logo needs a brands PR
 

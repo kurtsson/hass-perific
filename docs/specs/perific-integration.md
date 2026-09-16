@@ -111,7 +111,10 @@ no history accumulating.
 |---|---|---|---|---|
 | `energy_import` | `ENERGY` | `TOTAL_INCREASING` | kWh | `hwi`, `PhaseMinute` |
 | `energy_export` | `ENERGY` | `TOTAL_INCREASING` | kWh | `hwo`, `PhaseMinute` |
-| `power` | `POWER` | `MEASUREMENT` | W | derived — see below |
+| `power_import` | `POWER` | `MEASUREMENT` | W | `Σ` positive `hiavg × huavg`, `PhaseRealTime` |
+| `power_export` | `POWER` | `MEASUREMENT` | W | `Σ` negative phases, unsigned |
+| `current_l1..3` | `CURRENT` | `MEASUREMENT` | A | `hiavg`, `PhaseRealTime`, sign kept |
+| `voltage_l1..3` | `VOLTAGE` | `MEASUREMENT` | V | `huavg`, `PhaseRealTime`, diagnostic |
 
 `TOTAL_INCREASING` is confirmed correct for `hwi` / `hwo`: they are cumulative kWh registers, probed
 on a real device (`docs/device-notes.md`). It also carries the useful property that HA interprets a
@@ -128,19 +131,37 @@ rather than built speculatively.
 
 ### Power has no direct source
 
-The obvious candidate, `hwpi` / `hwpo` summed and converted from kW to W, does not work. Those
-fields appear only in the hour and day buckets, and their magnitudes contradict per-phase kW anyway
-— a day value of 13.819 would be 59 A on a phase whose measured maximum that day was 17.1 A.
+`hwpi` / `hwpo` are not power. They appear only in the hour and day buckets, and they are per-phase
+kWh for the bucket period — confirmed against the vendor app in `docs/device-notes.md`.
 
-No instantaneous power field exists. Power is therefore **derived from consecutive `hwi` / `hwo`
-readings** — energy delta over time delta, giving real power averaged across the poll interval. That
-needs the previous reading kept in the coordinator, which is why power is an M6 sensor rather than
-part of the minimal integration.
+Power is therefore **`hiavg × huavg` per phase, from `PhaseRealTime`**, with positive phases summed
+into `power_import` and negative phases into `power_export`. Two pieces of evidence decided it. The
+vendor's own app displays exactly this product: 873 W computed against 0.87 kW shown, from a capture
+taken beside it. And against the energy registers as ground truth it agrees to within about two
+percent, in both directions at once.
 
-The rejected alternative remains rejected: `Σ |hiavg| × huavg` produces apparent power in VA, and
-publishing it as `device_class: power` in W would be quietly wrong by the power factor. That it
-happened to match within 0.3% during the probe only means the power factor was near 1 for that
-minute's load.
+This publishes *apparent* power under `device_class: power`, which is a real inaccuracy under a poor
+power factor — the sensor reads slightly high, never low. The alternative, energy delta over time
+delta from consecutive `PhaseMinute` readings, measures something else: an average across the poll
+interval rather than an instantaneous value. It cannot answer "what is the house drawing right now",
+which is the question these sensors exist for.
+
+Splitting by sign rather than taking `Σ |hiavg| × huavg` is load-bearing. The meter accounts per
+phase, so one phase can export while another imports; an absolute-value sum reports the total as
+consumption, and a signed net reports neither figure. The Energy dashboard wants the directional
+pair anyway — `PowerConfig`'s two-sensor mode takes `stat_rate_from` and `stat_rate_to`, both
+positive.
+
+### The poll interval is configurable
+
+The energy registers advance once a minute, so the 60 s default already reads them at full
+resolution. `PhaseRealTime` moves every ~10 s, so a shorter interval buys fresher power, current and
+voltage and nothing else. The floor is 15 s rather than the device's own cadence because the API's
+rate limits are unmeasured.
+
+Changing the option reloads the entry. Assigning `update_interval` on a live coordinator stores the
+value without rescheduling the pending refresh, so the change would not take effect until after the
+next poll.
 
 ### No net-energy sensor
 

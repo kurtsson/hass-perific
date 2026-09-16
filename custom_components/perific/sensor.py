@@ -16,7 +16,13 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import (
+    EntityCategory,
+    UnitOfElectricCurrent,
+    UnitOfElectricPotential,
+    UnitOfEnergy,
+    UnitOfPower,
+)
 from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -31,8 +37,10 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-    from .api import Item, ItemPackets
+    from .api import Item, ItemPackets, PhaseData
     from .coordinator import PerificConfigEntry
+
+PHASES = (1, 2, 3)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -48,6 +56,96 @@ def _energy_import(packets: ItemPackets) -> float | None:
     return packets.minute.data.energy_import if packets.minute else None
 
 
+def _energy_export(packets: ItemPackets) -> float | None:
+    return packets.minute.data.energy_export if packets.minute else None
+
+
+def _phase_powers(packets: ItemPackets) -> list[float] | None:
+    """Power per phase, positive importing and negative exporting.
+
+    The API carries no power field. This product is apparent power, but the vendor's
+    own app displays exactly it, and against the energy registers it reconciles to
+    within a few percent — see ``docs/device-notes.md``.
+    """
+    packet = packets.realtime
+    if packet is None:
+        return None
+    currents, voltages = packet.data.current, packet.data.voltage
+    if not currents or len(currents) != len(voltages):
+        return None
+    powers = []
+    for current, voltage in zip(currents, voltages, strict=True):
+        if current is None or voltage is None:
+            return None
+        powers.append(current * voltage)
+    return powers
+
+
+def _power_import(packets: ItemPackets) -> float | None:
+    powers = _phase_powers(packets)
+    if powers is None:
+        return None
+    return round(sum(power for power in powers if power > 0), 1)
+
+
+def _power_export(packets: ItemPackets) -> float | None:
+    # Reported unsigned, which is what the Energy dashboard's two-sensor mode expects.
+    powers = _phase_powers(packets)
+    if powers is None:
+        return None
+    return round(-sum(power for power in powers if power < 0), 1)
+
+
+def _currents(data: PhaseData) -> tuple[float | None, ...]:
+    return data.current
+
+
+def _voltages(data: PhaseData) -> tuple[float | None, ...]:
+    return data.voltage
+
+
+def _phase_reading(
+    read: Callable[[PhaseData], tuple[float | None, ...]], phase: int
+) -> Callable[[ItemPackets], float | None]:
+    """Pick one phase out of a per-phase array in the real-time packet."""
+
+    def value_fn(packets: ItemPackets) -> float | None:
+        packet = packets.realtime
+        if packet is None:
+            return None
+        values = read(packet.data)
+        return values[phase - 1] if phase <= len(values) else None
+
+    return value_fn
+
+
+_PHASE_SENSORS: tuple[PerificSensorEntityDescription, ...] = tuple(
+    description
+    for phase in PHASES
+    for description in (
+        PerificSensorEntityDescription(
+            key=f"current_l{phase}",
+            translation_key=f"current_l{phase}",
+            device_class=SensorDeviceClass.CURRENT,
+            state_class=SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+            suggested_display_precision=2,
+            value_fn=_phase_reading(_currents, phase),
+        ),
+        PerificSensorEntityDescription(
+            key=f"voltage_l{phase}",
+            translation_key=f"voltage_l{phase}",
+            device_class=SensorDeviceClass.VOLTAGE,
+            state_class=SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+            suggested_display_precision=1,
+            entity_category=EntityCategory.DIAGNOSTIC,
+            value_fn=_phase_reading(_voltages, phase),
+        ),
+    )
+)
+
+
 SENSORS: tuple[PerificSensorEntityDescription, ...] = (
     PerificSensorEntityDescription(
         key="energy_import",
@@ -57,6 +155,33 @@ SENSORS: tuple[PerificSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         value_fn=_energy_import,
     ),
+    PerificSensorEntityDescription(
+        key="energy_export",
+        translation_key="energy_export",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        value_fn=_energy_export,
+    ),
+    PerificSensorEntityDescription(
+        key="power_import",
+        translation_key="power_import",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=0,
+        value_fn=_power_import,
+    ),
+    PerificSensorEntityDescription(
+        key="power_export",
+        translation_key="power_export",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=0,
+        value_fn=_power_export,
+    ),
+    *_PHASE_SENSORS,
 )
 
 

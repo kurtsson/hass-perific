@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import voluptuous as vol
 from homeassistant.config_entries import SOURCE_USER
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -20,7 +22,13 @@ from custom_components.perific.api import (
     PerificRateLimitError,
     PerificResponseError,
 )
-from custom_components.perific.const import DOMAIN
+from custom_components.perific.config_flow import OPTIONS_SCHEMA
+from custom_components.perific.const import (
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    MAX_SCAN_INTERVAL,
+    MIN_SCAN_INTERVAL,
+)
 
 from .conftest import PASSWORD, USERNAME
 
@@ -181,3 +189,44 @@ class TestReauth:
         assert result["type"] is FlowResultType.FORM
         assert result["errors"] == {"base": expected}
         assert config_entry.data[CONF_PASSWORD] == PASSWORD
+
+
+class TestOptions:
+    """The poll interval, the only thing tunable after setup."""
+
+    async def test_an_entry_without_options_polls_at_the_default(
+        self, hass: HomeAssistant, setup_integration: MockConfigEntry
+    ) -> None:
+        assert setup_integration.runtime_data.update_interval == timedelta(
+            seconds=DEFAULT_SCAN_INTERVAL
+        )
+
+    async def test_a_saved_interval_reaches_the_coordinator(
+        self,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """Saving reloads the entry, which is what makes the new interval apply."""
+        with patch("custom_components.perific.EnegicClient", return_value=mock_client):
+            result = await hass.config_entries.options.async_init(
+                setup_integration.entry_id
+            )
+            assert result["type"] is FlowResultType.FORM
+
+            result = await hass.config_entries.options.async_configure(
+                result["flow_id"], {CONF_SCAN_INTERVAL: 30}
+            )
+            await hass.async_block_till_done()
+
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert setup_integration.options == {CONF_SCAN_INTERVAL: 30}
+        assert setup_integration.runtime_data.update_interval == timedelta(seconds=30)
+
+    @pytest.mark.parametrize(
+        "seconds", [MIN_SCAN_INTERVAL - 1, MAX_SCAN_INTERVAL + 1, 0, -5]
+    )
+    def test_an_interval_outside_the_bounds_is_rejected(self, seconds: int) -> None:
+        """Rate limits are unmeasured, so the floor is a guard rather than a hint."""
+        with pytest.raises(vol.Invalid):
+            OPTIONS_SCHEMA({CONF_SCAN_INTERVAL: seconds})

@@ -30,10 +30,50 @@
       "reauth_successful": "Successfully signed back in."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "description": "How often to poll the Perific API. The energy registers only advance once a minute; the real-time bucket updates every 10 seconds, so a shorter interval buys fresher power and current readings and nothing else. The API's rate limits are undocumented, so lower this gradually.",
+        "data": {
+          "scan_interval": "Poll interval"
+        },
+        "data_description": {
+          "scan_interval": "Seconds between polls."
+        }
+      }
+    }
+  },
   "entity": {
     "sensor": {
       "energy_import": {
         "name": "Energy imported"
+      },
+      "energy_export": {
+        "name": "Energy exported"
+      },
+      "power_import": {
+        "name": "Power imported"
+      },
+      "power_export": {
+        "name": "Power exported"
+      },
+      "current_l1": {
+        "name": "Current L1"
+      },
+      "current_l2": {
+        "name": "Current L2"
+      },
+      "current_l3": {
+        "name": "Current L3"
+      },
+      "voltage_l1": {
+        "name": "Voltage L1"
+      },
+      "voltage_l2": {
+        "name": "Voltage L2"
+      },
+      "voltage_l3": {
+        "name": "Voltage L3"
       }
     }
   }
