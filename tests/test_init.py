@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.perific.api import (
@@ -15,8 +17,9 @@ from custom_components.perific.api import (
     PerificConnectionError,
     PerificRateLimitError,
     PerificResponseError,
+    parse_latest_packets,
 )
-from custom_components.perific.const import DOMAIN
+from custom_components.perific.const import DEFAULT_SCAN_INTERVAL, DOMAIN
 
 from .conftest import PASSWORD, USERNAME
 
@@ -141,6 +144,49 @@ class TestPolling:
         assert not coordinator.last_update_success
         assert coordinator.last_exception.retry_after == 42.0
         assert not _reauth_flows(hass)
+
+    async def test_a_rate_limit_raises_a_repair_issue(
+        self,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """The coordinator logs once and then goes quiet, so the log is not enough."""
+        coordinator = setup_integration.runtime_data
+        mock_client.async_get_latest_packets.side_effect = PerificRateLimitError(
+            "slow down", retry_after=42.0
+        )
+
+        await coordinator.async_refresh()
+
+        issue = ir.async_get(hass).async_get_issue(DOMAIN, coordinator._issue_id)
+        assert issue is not None
+        assert issue.translation_key == "rate_limited"
+        assert issue.severity is ir.IssueSeverity.WARNING
+        assert issue.translation_placeholders == {"seconds": str(DEFAULT_SCAN_INTERVAL)}
+
+    async def test_the_issue_clears_once_a_poll_gets_through(
+        self,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+        packets_t0: Any,
+    ) -> None:
+        coordinator = setup_integration.runtime_data
+        mock_client.async_get_latest_packets.side_effect = PerificRateLimitError(
+            "slow down"
+        )
+        await coordinator.async_refresh()
+        assert ir.async_get(hass).async_get_issue(DOMAIN, coordinator._issue_id)
+
+        mock_client.async_get_latest_packets.side_effect = None
+        mock_client.async_get_latest_packets.return_value = parse_latest_packets(
+            packets_t0
+        )
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success
+        assert ir.async_get(hass).async_get_issue(DOMAIN, coordinator._issue_id) is None
 
     async def test_a_connection_error_only_marks_the_update_failed(
         self,

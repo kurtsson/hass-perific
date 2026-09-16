@@ -43,6 +43,12 @@
       }
     }
   },
+  "issues": {
+    "rate_limited": {
+      "title": "Perific begränsar antalet anrop",
+      "description": "Perific APIet avvisar anrop för att de kommer in för tätt, så sensorerna förblir otillgängliga tills det släpper in oss igen.\n\nAvläsningsintervallet är just nu {seconds} sekunder. Höj det under Inställningar > Enheter och tjänster > Perific > Konfigurera. Meddelandet försvinner av sig självt när en avläsning lyckas."
+    }
+  },
   "entity": {
     "sensor": {
       "energy_import": {

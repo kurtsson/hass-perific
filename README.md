@@ -5,7 +5,9 @@ Home Assistant integration for the **Perific One** energy monitor.
 Reads grid import and export from your electricity meter's HAN port via the Enegic cloud API, and
 feeds them to the Energy dashboard and long-term statistics.
 
-> **Early development.** Not installable yet.
+> **Early days.** Version 0.2.0, running against one household's meter. The sensors and their typing
+> are verified, but the API is undocumented and this has been exercised on a single device — expect
+> rough edges, and please open an issue if you hit one.
 
 ## Why this exists
 
@@ -80,7 +82,19 @@ dashboard derives net from import and export itself.
 
 ## Installation
 
-Not published yet. It will be installable as a HACS custom repository.
+Through [HACS](https://hacs.xyz), as a custom repository:
+
+1. HACS → ⋮ → **Custom repositories**
+2. Repository `kurtsson/hass-perific`, type **Integration**
+3. Add, then install **Perific** from the HACS list
+4. Restart Home Assistant
+5. **Settings → Devices & Services → Add Integration → Perific**
+
+Or by hand: copy `custom_components/perific/` into your Home Assistant `config/custom_components/`
+and restart.
+
+Home Assistant will warn that this is a custom integration it has not tested. That warning is
+expected for anything installed outside core.
 
 ## Configuration
 
@@ -94,6 +108,17 @@ button. The energy registers only advance once a minute, so polling faster buys 
 real-time bucket the power and current sensors read moves every ~10 seconds, so a shorter interval
 does make those fresher. The API's rate limits are undocumented and unmeasured, which is why the
 floor is 15 seconds rather than the device's own 10 — lower it gradually.
+
+If you do go too fast, the API answers `429` and the sensors go unavailable. Home Assistant logs
+that once and then stays quiet, which is easy to miss, so the integration also raises an issue under
+**Settings → Repairs** naming the current interval. It withdraws itself as soon as a poll succeeds.
+
+### Reporting a problem
+
+The integration's **⋮ → Download diagnostics** gives a redacted dump: the config entry, the
+coordinator's health, the meters, and the last raw packets received. The packets are the useful
+part — nearly every failure here is the API returning a shape the parser didn't expect. Your
+username, password and the device's MAC address are removed.
 
 ### Energy dashboard
 
@@ -225,10 +250,12 @@ What has been extracted from them, with a confidence level on every claim, is in
   reads every decrease as a meter reset, which corrupts the long-term statistics series. The Energy
   dashboard derives net from import and export by itself, so there is nothing to gain from
   publishing it.
-- **Power is derived, not read.** There is no instantaneous power field in the API. Computing
-  `Σ |current| × voltage` gives *apparent* power in VA, which is wrong by the power factor and
-  shouldn't carry `device_class: power` in watts. Power here comes from the change in the energy
-  registers between polls instead.
+- **Power is computed, and split by direction.** There is no instantaneous power field in the API.
+  Other integrations sum `|current| × voltage` into a single figure, one of them against a hardcoded
+  230 V. Here the per-phase products keep their sign and are split into an import and an export
+  sensor, using the voltage the device reports — because the meter accounts per phase, so both
+  directions can be live at once. The approximation is the same either way and is stated above:
+  it is apparent power.
 - **Long-term statistics are the goal**, not a side effect — which is why sensor typing is covered
   by tests rather than left to be discovered from a missing history graph.
 
@@ -242,9 +269,6 @@ integration is put together.
   their own entity class.
 - [`thomasloven/hass-plejd`](https://github.com/thomasloven/hass-plejd) — module layout: a base
   entity module that keeps the platform files thin, and a declarative diagnostics redaction tree.
-
-- [`Pokeyo-AB/homeassistant-perific`](https://github.com/Pokeyo-AB/homeassistant-perific)
-- [`toshi38/homeassistant-perific`](https://github.com/toshi38/homeassistant-perific)
 
 ## Licence
 

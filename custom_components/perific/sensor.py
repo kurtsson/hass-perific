@@ -7,6 +7,7 @@ louder than a log warning. See ``docs/specs/perific-integration.md``.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,7 @@ from homeassistant.const import (
     UnitOfEnergy,
     UnitOfPower,
 )
+from homeassistant.core import callback
 from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -39,6 +41,8 @@ if TYPE_CHECKING:
 
     from .api import Item, ItemPackets, PhaseData
     from .coordinator import PerificConfigEntry
+
+_LOGGER = logging.getLogger(__name__)
 
 PHASES = (1, 2, 3)
 
@@ -231,13 +235,59 @@ class PerificSensor(CoordinatorEntity[PerificCoordinator], SensorEntity):
             hw_version=meter.hardware,
         )
 
-    @property
-    def native_value(self) -> float | None:
-        """The reading, or None when this packet doesn't carry it."""
+        self._last_counter: float | None = None
+        self._unconfirmed: float | None = None
+        self._attr_native_value = self._next_value()
+
+    def _read(self) -> float | None:
+        """Pull this sensor's reading out of the latest packets."""
         packets = self.coordinator.data.get(self._item_id)
         if packets is None:
             return None
         return self.entity_description.value_fn(packets)
+
+    def _next_value(self) -> float | None:
+        """Apply the monotonicity guard, for the counters that need it."""
+        value = self._read()
+        if self.entity_description.state_class is not SensorStateClass.TOTAL_INCREASING:
+            return value
+        if value is None:
+            # The baseline survives the gap, so a stale packet on recovery is still
+            # measured against the last real reading.
+            return None
+
+        # A flat register is normal — it means nothing flowed that way, which happens
+        # for hours whenever the house is exporting. Only a fall is suspect.
+        if self._last_counter is None or value >= self._last_counter:
+            self._unconfirmed = None
+            self._last_counter = value
+            return value
+
+        if self._unconfirmed is not None:
+            # Two polls running below the baseline. A re-served stale packet does not
+            # persist; a replaced meter does, and it counts up from its own new base
+            # rather than down, so the second reading is not expected to be lower.
+            self._unconfirmed = None
+            self._last_counter = value
+            return value
+
+        # Home Assistant reads a fall in a TOTAL_INCREASING counter as a meter reset
+        # and books the whole new value as one period's consumption, which is far
+        # harder to repair than a held sample is to lose.
+        _LOGGER.warning(
+            "%s went backwards, %s -> %s; holding until a second reading agrees",
+            self.entity_id,
+            self._last_counter,
+            value,
+        )
+        self._unconfirmed = value
+        return self._last_counter
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Recompute once per poll — the guard must not run inside a property."""
+        self._attr_native_value = self._next_value()
+        super()._handle_coordinator_update()
 
     @property
     def available(self) -> bool:

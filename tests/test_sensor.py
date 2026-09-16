@@ -263,3 +263,135 @@ class TestIdentity:
         assert sorted(entity.unique_id for entity in entities) == sorted(
             f"{METER_ID}_{key}" for key in KEYS
         )
+
+
+class TestMonotonicityGuard:
+    """A cumulative counter that falls is read as a meter reset.
+
+    Home Assistant books the whole new value as one period's consumption, which
+    corrupts exactly the long-term series this integration exists to build.
+    """
+
+    async def _poll(
+        self,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+        energy_import: float | None,
+    ) -> None:
+        """Serve one more packet carrying the given import register."""
+        packets = mock_client.async_get_latest_packets.return_value
+        entry = packets[METER_ID]
+        minute = entry.packets[BUCKET_MINUTE]
+        mock_client.async_get_latest_packets.return_value = {
+            METER_ID: replace(
+                entry,
+                packets={
+                    **entry.packets,
+                    BUCKET_MINUTE: replace(
+                        minute,
+                        data=replace(minute.data, energy_import=energy_import),
+                    ),
+                },
+            )
+        }
+        await setup_integration.runtime_data.async_refresh()
+        await hass.async_block_till_done()
+
+    def _state(self, hass: HomeAssistant, entity_ids: dict[str, str]) -> str:
+        return hass.states.get(entity_ids["energy_import"]).state
+
+    async def test_a_flat_register_passes_straight_through(
+        self,
+        hass: HomeAssistant,
+        entity_ids: dict[str, str],
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """Hours of an unchanged register are normal while the house exports."""
+        await self._poll(hass, setup_integration, mock_client, 248718.155)
+
+        assert float(self._state(hass, entity_ids)) == 248718.155
+
+    async def test_a_single_fall_is_held(
+        self,
+        hass: HomeAssistant,
+        entity_ids: dict[str, str],
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        await self._poll(hass, setup_integration, mock_client, 1000.0)
+
+        assert float(self._state(hass, entity_ids)) == 248718.155
+
+    async def test_a_fall_that_repeats_is_accepted(
+        self,
+        hass: HomeAssistant,
+        entity_ids: dict[str, str],
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """A replaced meter really does start again, so this cannot hold forever."""
+        await self._poll(hass, setup_integration, mock_client, 1000.0)
+        await self._poll(hass, setup_integration, mock_client, 1000.5)
+
+        assert float(self._state(hass, entity_ids)) == 1000.5
+
+    async def test_a_recovery_discards_the_held_reading(
+        self,
+        hass: HomeAssistant,
+        entity_ids: dict[str, str],
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """One stale packet followed by a good one must leave no trace."""
+        await self._poll(hass, setup_integration, mock_client, 1000.0)
+        await self._poll(hass, setup_integration, mock_client, 248718.200)
+
+        assert float(self._state(hass, entity_ids)) == 248718.200
+
+        await self._poll(hass, setup_integration, mock_client, 1000.0)
+        assert float(self._state(hass, entity_ids)) == 248718.200
+
+    async def test_the_baseline_survives_an_unavailable_period(
+        self,
+        hass: HomeAssistant,
+        entity_ids: dict[str, str],
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """Otherwise a gap would let the next stale packet through unchallenged."""
+        await self._poll(hass, setup_integration, mock_client, None)
+        assert self._state(hass, entity_ids) == STATE_UNAVAILABLE
+
+        await self._poll(hass, setup_integration, mock_client, 1000.0)
+        assert float(self._state(hass, entity_ids)) == 248718.155
+
+    async def test_power_is_not_guarded(
+        self,
+        hass: HomeAssistant,
+        entity_ids: dict[str, str],
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """Only TOTAL_INCREASING counters are; a measurement may fall freely."""
+        packets = mock_client.async_get_latest_packets.return_value
+        entry = packets[METER_ID]
+        realtime = entry.packets[BUCKET_REALTIME]
+        mock_client.async_get_latest_packets.return_value = {
+            METER_ID: replace(
+                entry,
+                packets={
+                    **entry.packets,
+                    BUCKET_REALTIME: replace(
+                        realtime,
+                        data=replace(realtime.data, current=(1.0, 1.0, 1.0)),
+                    ),
+                },
+            )
+        }
+        await setup_integration.runtime_data.async_refresh()
+        await hass.async_block_till_done()
+
+        state = hass.states.get(entity_ids["power_import"])
+        assert float(state.state) < 4054.5

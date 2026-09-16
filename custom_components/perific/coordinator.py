@@ -11,7 +11,9 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
+from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 # ItemPackets parameterises the coordinator's base class, so it is needed at runtime.
@@ -58,6 +60,7 @@ class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
         )
         self.client = client
         self.meters: list[Item] = []
+        self._rate_limited = False
 
     async def _async_setup(self) -> None:
         """Log in and discover meters, once per setup of the config entry.
@@ -82,12 +85,56 @@ class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
     async def _async_update_data(self) -> dict[int, ItemPackets]:
         """Fetch one round of packets for every item on the account."""
         try:
-            return await self.client.async_get_latest_packets()
+            packets = await self.client.async_get_latest_packets()
         except PerificAuthError as err:
             # Never wrapped in UpdateFailed. Wrapped, the coordinator reads it as a
             # transient failure, reauth never triggers, and updates stop silently.
             raise ConfigEntryAuthFailed(str(err)) from err
         except PerificRateLimitError as err:
-            raise UpdateFailed(str(err), retry_after=err.retry_after) from err
+            self._async_rate_limited()
+            raise UpdateFailed(
+                f"{err}. Raise the poll interval in the integration options.",
+                retry_after=err.retry_after,
+            ) from err
         except PerificError as err:
             raise UpdateFailed(str(err)) from err
+
+        self._async_rate_limit_cleared()
+        return packets
+
+    @property
+    def _issue_id(self) -> str:
+        """One issue per config entry, so two accounts report independently."""
+        return f"rate_limited_{self.config_entry.entry_id}"
+
+    @callback
+    def _async_rate_limited(self) -> None:
+        """Surface throttling in Repairs.
+
+        The coordinator logs a failure only on the transition out of success, so
+        sustained throttling leaves one line in the log and nothing in the interface.
+        This is user-correctable, so it needs somewhere a user will look.
+        """
+        if self._rate_limited:
+            return
+        self._rate_limited = True
+        seconds = (
+            int(self.update_interval.total_seconds()) if self.update_interval else 0
+        )
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="rate_limited",
+            translation_placeholders={"seconds": str(seconds)},
+        )
+
+    @callback
+    def _async_rate_limit_cleared(self) -> None:
+        """Withdraw the issue once a poll gets through again."""
+        if not self._rate_limited:
+            return
+        self._rate_limited = False
+        ir.async_delete_issue(self.hass, DOMAIN, self._issue_id)

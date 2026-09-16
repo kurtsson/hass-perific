@@ -206,11 +206,46 @@ removing them.
 
 ## M6 — Second pass
 
-The monotonicity guard, `diagnostics.py`, CI (hassfest + HACS validation), and going public as a
-HACS custom repository.
-
 `energy_export`, both power sensors, the per-phase sensors and the options flow all moved into M5 —
 see that milestone.
+
+**CI ✅.** `.github/workflows/ci.yml` runs three jobs on push and pull request: ruff, mypy and
+pytest under Python 3.14; `home-assistant/actions/hassfest`; and `hacs/action`. The HACS job carries
+`ignore: brands`, because its brands check looks the integration up in `home-assistant/brands`,
+which cannot accept it until this repository is public — drop that once the brands PR lands.
+
+Its first run paid for itself: HACS requires `issue_tracker` in the manifest and hassfest does not,
+so the key was missing and nothing run locally could have said so. The two validators disagree about
+what a manifest must contain; passing hassfest is not evidence of passing HACS.
+
+**Diagnostics ✅.** `diagnostics.py` dumps the entry, the coordinator's health, the meters and the
+last raw packets. The packets are the point: nearly every failure here is the API returning a shape
+the parser did not expect, and the parsed sensor values alone don't show it. Username, password and
+MAC address are redacted; item IDs are kept, since they tie packets to meters and mean nothing off
+the account.
+
+**Rate limiting is now visible ✅.** A `429` used to produce exactly one `ERROR` line and then
+silence — `DataUpdateCoordinator` logs a failure only on the transition out of success — while the
+sensors went unavailable with no explanation anywhere a user looks. Since the poll interval is
+user-configurable, this is a self-inflicted failure that needs a self-evident cure, so the
+coordinator now raises a Repairs issue naming the current interval and withdraws it on the next
+successful poll.
+
+**Monotonicity guard ✅**, reversing the decision to defer it. The argument for waiting was not to
+build against an unobserved failure; the argument against waiting is that the damage is asymmetric.
+A held sample costs one reading. A fall accepted into a `TOTAL_INCREASING` counter books the whole
+register as one period's consumption, in exactly the long-term series the project exists to build,
+and those rows are laborious to repair.
+
+What M5 taught is what the guard must *not* do. A flat register is normal — it stayed flat for
+thirty minutes while the house exported — so only a fall is suspect, never a repeat. The first fall
+below the running baseline is held and logged; a recovery discards it before the recorder ever sees
+it; a second consecutive fall is accepted, because a replaced meter really does start again. The
+second reading is not required to be lower than the first, since a new meter counts upwards from its
+own base. The baseline deliberately survives an unavailable period: clearing it would wave through
+the first packet after a gap, which is when a stale one is most likely.
+
+**Still open:** going public as a HACS custom repository, and the brands PR below.
 
 ### The integration logo needs a brands PR
 
@@ -239,13 +274,17 @@ than before. Artwork is a design decision, not a code one.
 
 ## Risks
 
-| Risk | Mitigation |
-|---|---|
-| `hwi` / `hwo` turn out to be interval values | M2 confirms before any sensor is written |
-| Rate limits unknown | 5-minute polling; `429` handled distinctly |
-| Undocumented API changes without notice | Vendored client confines it to one module; fixtures surface breakage in tests |
-| Stale packets inject false spikes into statistics | Guard designed, deferred to M6, promoted if seen during M5 |
-| Deploy leaves a broken component and HA won't start | Atomic swap plus a post-restart entity check that fails loudly |
+| Risk | Mitigation | Status |
+|---|---|---|
+| `hwi` / `hwo` turn out to be interval values | M2 confirms before any sensor is written | Settled: cumulative registers |
+| Rate limits unknown | 60 s default, 15 s floor, configurable; `429` handled distinctly with `retry_after` | Open — still unmeasured |
+| Undocumented API changes without notice | Vendored client confines it to one module; fixtures surface breakage in tests | Open by nature |
+| Stale packets inject false spikes into statistics | Guard holds a single fall until a second reading agrees | Built in M6; still not observed in the wild |
+| Deploy leaves a broken component and HA won't start | Atomic swap plus a post-restart check that the config entry reaches `loaded`, and rollback | Exercised; rollback path still untested |
+
+On the stale-packet guard: a 30-minute frozen import register during M5 looked exactly like the
+symptom and turned out to be genuine — the house had switched to exporting, so `hwi` had nothing to
+count while `hwo` advanced normally. That is why the guard reacts to a fall and never to a repeat.
 
 ## Done when
 

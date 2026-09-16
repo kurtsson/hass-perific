@@ -124,10 +124,24 @@ Both energy sensors read the **`PhaseMinute`** bucket. `PhaseRealTime` carries n
 at all, so it is not an option, and the hour and day buckets are stale by design.
 
 That property is also a hazard: a cloud API re-serving a stale or duplicate packet produces a
-one-sample dip, which HA reads as a reset and which corrupts the series. Statistics rows are
-laborious to correct after the fact. A guard — suppress a single-sample regression, accept it only
-when a second reading confirms — is designed but deferred until the behaviour is actually observed,
-rather than built speculatively.
+one-sample dip, which HA reads as a reset and which books the whole register as one period's
+consumption. Statistics rows are laborious to correct after the fact, and they are the thing this
+integration exists to build, so the guard is built rather than deferred: the asymmetry between
+losing one held sample and corrupting the series favours holding.
+
+It triggers only on a **fall**. A flat register is normal — it stays flat for hours whenever the
+house is exporting, since nothing is flowing the other way — so only a decrease is treated as
+suspect. The first fall below the running baseline is held and logged; if the next poll is back
+above the baseline, the held reading is discarded and never reaches the recorder. If the next poll
+is *also* below it, the fall is accepted, because a replaced meter genuinely does start again. The
+second reading is not required to be lower than the first: a new meter counts upwards from its own
+base.
+
+The baseline survives an unavailable period deliberately. Were it cleared, the first packet after
+any gap would be accepted unchallenged, which is exactly when a stale one is most likely.
+
+The guard applies only to `TOTAL_INCREASING`. Power, current and voltage are measurements and fall
+freely by nature.
 
 ### Power has no direct source
 
@@ -210,8 +224,14 @@ repositories at all. Hence a deploy script.
 | No supported items on the account | `ConfigEntryNotReady` | Retried; a real account shouldn't hit this |
 | 401 during a poll | `ConfigEntryAuthFailed` — **unwrapped** | Reauth triggers |
 | Connection error during a poll | `UpdateFailed` | Entities unavailable; coordinator retries |
-| 429 during a poll | `UpdateFailed` with retry hint | Backs off instead of hammering |
+| 429 during a poll | `UpdateFailed` with retry hint, plus a Repairs issue | Backs off instead of hammering, and says so where a user will see it |
 | A field missing from a packet | nothing | That one entity reports unavailable |
+
+The Repairs issue on `429` exists because `DataUpdateCoordinator` logs a failure only on the
+transition out of success. Sustained throttling therefore leaves a single `ERROR` line and nothing
+in the interface, while every sensor sits unavailable. Since the poll interval is user-configurable,
+this is a failure a user can cause and can fix, so it needs a surface a user actually visits. The
+issue names the interval in force and withdraws itself on the next successful poll.
 
 ## Open questions
 

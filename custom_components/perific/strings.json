@@ -43,6 +43,12 @@
       }
     }
   },
+  "issues": {
+    "rate_limited": {
+      "title": "Perific is rate limiting requests",
+      "description": "The Perific API is refusing requests because they are arriving too quickly, so the sensors will stay unavailable until it lets us back in.\n\nThe poll interval is currently {seconds} seconds. Raise it under Settings > Devices & services > Perific > Configure. This message disappears on its own once a poll succeeds."
+    }
+  },
   "entity": {
     "sensor": {
       "energy_import": {
