@@ -10,7 +10,7 @@ import logging
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
+from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import issue_registry as ir
@@ -63,14 +63,8 @@ class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
         self._rate_limited = False
 
     async def _async_setup(self) -> None:
-        """Log in and discover meters, once per setup of the config entry.
-
-        Re-minting the token here rather than persisting it costs one request per
-        restart and removes a class of stale-credential-on-disk bugs.
-        """
-        data = self.config_entry.data
+        """Discover the account's meters, once per setup of the config entry."""
         try:
-            await self.client.async_login(data[CONF_USERNAME], data[CONF_PASSWORD])
             self.meters = await self.client.async_get_meters()
         except PerificAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err

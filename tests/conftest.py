@@ -11,6 +11,7 @@ import inspect
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -18,22 +19,36 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from aiohttp import ClientSession, web
 from aiohttp.test_utils import TestServer
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_PASSWORD, CONF_TOKEN, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.perific.api import (
     EnegicClient,
     Item,
+    TokenInfo,
     parse_items,
     parse_latest_packets,
 )
-from custom_components.perific.const import DOMAIN
+from custom_components.perific.const import CONF_TOKEN_VALID_TO, DOMAIN
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 USERNAME = "user@example.com"
 PASSWORD = "correct horse battery staple"
+
+TOKEN = "11111111-2222-3333-4444-555555555555"
+# Relative to now, because setup refuses a token that has already expired. A literal
+# date here would turn into a test that starts failing on a particular day.
+TOKEN_VALID_TO = dt_util.utcnow() + timedelta(days=365)
+TOKEN_INFO = TokenInfo(token=TOKEN, valid_to=TOKEN_VALID_TO)
+
+ENTRY_DATA = {
+    CONF_USERNAME: USERNAME,
+    CONF_TOKEN: TOKEN,
+    CONF_TOKEN_VALID_TO: TOKEN_VALID_TO.isoformat(),
+}
 
 
 def load_fixture(name: str) -> Any:
@@ -207,6 +222,7 @@ def meters(overview: Any) -> list[Item]:
 def mock_client(meters: list[Item], packets_t0: Any) -> AsyncMock:
     """An ``EnegicClient`` stand-in answering from the captures."""
     client = AsyncMock()
+    client.async_login.return_value = TOKEN_INFO
     client.async_get_meters.return_value = meters
     client.async_get_latest_packets.return_value = parse_latest_packets(packets_t0)
     return client
@@ -214,11 +230,24 @@ def mock_client(meters: list[Item], packets_t0: Any) -> AsyncMock:
 
 @pytest.fixture
 def config_entry() -> MockConfigEntry:
-    """A config entry holding credentials, as the config flow creates one."""
+    """A config entry holding a token, as the config flow creates one."""
     return MockConfigEntry(
         domain=DOMAIN,
         title=USERNAME,
         unique_id=USERNAME,
+        version=2,
+        data=dict(ENTRY_DATA),
+    )
+
+
+@pytest.fixture
+def legacy_config_entry() -> MockConfigEntry:
+    """A version 1 entry, from before the password was traded for a token."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title=USERNAME,
+        unique_id=USERNAME,
+        version=1,
         data={CONF_USERNAME: USERNAME, CONF_PASSWORD: PASSWORD},
     )
 

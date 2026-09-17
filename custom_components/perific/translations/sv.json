@@ -80,6 +80,18 @@
       },
       "voltage_l3": {
         "name": "Spänning L3"
+      },
+      "last_packet": {
+        "name": "Senaste paket"
+      },
+      "status": {
+        "name": "Status",
+        "state": {
+          "ok": "OK",
+          "stale": "Inaktuella data",
+          "no_data": "Inga data",
+          "offline": "Når inte Perific"
+        }
       }
     }
   }

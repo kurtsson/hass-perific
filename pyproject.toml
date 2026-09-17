@@ -1,20 +1,36 @@
 [project]
 name = "hass-perific"
-version = "0.0.0"
+version = "0.3.0"
 description = "Home Assistant custom integration for the Perific / Enegic energy monitor"
-requires-python = ">=3.14"
+requires-python = ">=3.14.2"
 
 # Not a distributable package — this exists to hold tool configuration and the dev
-# dependency group. The integration ships as custom_components/perific/.
+# dependency groups. The integration ships as custom_components/perific/.
 
 [dependency-groups]
 dev = [
-    # Pins homeassistant==2026.9.2 itself, matching the deployment target and the
-    # image in docker-compose.yml. Bump all three together or tests stop being
-    # representative.
+    "pytest",
+    # Pins homeassistant==2026.9.2, matching the deployment target and the image in
+    # docker-compose.yml. The minimum-homeassistant group below is what proves the
+    # floor in hacs.json still works.
     "pytest-homeassistant-custom-component==0.13.365",
-    "ruff==0.16.7",
     "mypy==2.3.1",
+    "pre-commit>=4.0",
+    "ruff==0.16.7",
+]
+# The oldest Home Assistant the integration claims to support, per hacs.json. The
+# plugin pins Home Assistant itself, so its version is what sets the floor.
+minimum-homeassistant = [
+    "pytest",
+    "pytest-homeassistant-custom-component==0.13.330",
+]
+
+[tool.uv]
+conflicts = [
+    [
+        { group = "dev" },
+        { group = "minimum-homeassistant" },
+    ],
 ]
 
 [tool.ruff]
@@ -23,55 +39,63 @@ line-length = 88
 extend-exclude = [".reference"]
 
 [tool.ruff.lint]
-# Chosen to overlap Home Assistant core's own selection, so patterns copied from
-# upstream integrations pass unchanged.
-select = [
-    "A",      # flake8-builtins
-    "ASYNC",  # flake8-async
-    "B",      # flake8-bugbear
-    "C4",     # flake8-comprehensions
-    "D",      # pydocstyle
-    "E",      # pycodestyle errors
-    "F",      # pyflakes
-    "I",      # isort
-    "ICN",    # flake8-import-conventions
-    "INP",    # flake8-no-pep420
-    "ISC",    # flake8-implicit-str-concat
-    "LOG",    # flake8-logging
-    "N",      # pep8-naming
-    "PERF",   # perflint
-    "PGH",    # pygrep-hooks
-    "PIE",    # flake8-pie
-    "PT",     # flake8-pytest-style
-    "RET",    # flake8-return
-    "RSE",    # flake8-raise
-    "RUF",    # ruff-specific
-    "SIM",    # flake8-simplify
-    "SLF",    # flake8-self
-    "T20",    # flake8-print
-    "TC",     # flake8-type-checking
-    "TID",    # flake8-tidy-imports
-    "TRY",    # tryceratops
-    "UP",     # pyupgrade
-    "W",      # pycodestyle warnings
-]
+select = ["ALL"]
 ignore = [
+    "ANN401",  # the API returns arbitrary JSON; `Any` at that boundary is the honest type
+    "COM812",  # conflicts with the formatter
+    "CPY001",  # no per-file copyright headers in this project
     "D203",    # conflicts with D211
     "D213",    # conflicts with D212
     "E501",    # line length is the formatter's job
+    "EM101",   # naming every exception message costs a line and reads worse
+    "EM102",   # as EM101, for f-strings
+    "ISC001",  # conflicts with the formatter
     "TRY003",  # long messages outside exception class — HA integrations do this everywhere
 ]
 
 [tool.ruff.lint.pydocstyle]
 convention = "pep257"
 
+[tool.ruff.lint.isort]
+known-first-party = ["custom_components.perific"]
+
 [tool.ruff.lint.per-file-ignores]
+# These are config-entry key names, not embedded secrets.
+"custom_components/perific/const.py" = ["S105"]
 # A test's name is its documentation, and its type-only imports are worth keeping at
 # runtime so the file reads as ordinary Python.
-"tests/**" = ["D100", "D102", "D103", "D401", "SLF001", "TC001", "TC002", "TC003"]
+"tests/**" = [
+    "ARG001",   # a fixture is often requested for its effect, not its value
+    "ARG002",
+    "D100",
+    "D102",
+    "D103",
+    "D401",
+    "PLR0913",  # a parametrised test takes the fixtures it takes
+    "PLR0917",
+    "PLR2004",  # comparing against a literal is the point of an assertion
+    "S101",     # pytest assertions
+    "S105",     # fixture tokens are not real credentials
+    "S106",
+    "SLF001",
+    "TC001",
+    "TC002",
+    "TC003",
+]
 # The probe is a standalone diagnostic script: it prints to stdout by design, and its
-# own helpers are documented by the module docstring rather than one apiece.
-"scripts/probe_api.py" = ["D102", "D103", "D107", "T20", "TRY301"]
+# own helpers are documented by the module docstring rather than one apiece. It opens
+# only the https URL it builds against the API host.
+"scripts/probe_api.py" = [
+    "C901",
+    "D102",
+    "D103",
+    "D107",
+    "PLR0911",
+    "PLR2004",
+    "S310",
+    "T20",
+    "TRY301",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

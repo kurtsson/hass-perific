@@ -11,9 +11,15 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import voluptuous as vol
 from homeassistant.config_entries import SOURCE_USER
-from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
+from homeassistant.const import (
+    CONF_PASSWORD,
+    CONF_SCAN_INTERVAL,
+    CONF_TOKEN,
+    CONF_USERNAME,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.perific.api import (
@@ -21,16 +27,18 @@ from custom_components.perific.api import (
     PerificConnectionError,
     PerificRateLimitError,
     PerificResponseError,
+    TokenInfo,
 )
 from custom_components.perific.config_flow import OPTIONS_SCHEMA
 from custom_components.perific.const import (
+    CONF_TOKEN_VALID_TO,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
 )
 
-from .conftest import PASSWORD, USERNAME
+from .conftest import ENTRY_DATA, PASSWORD, TOKEN, TOKEN_INFO, USERNAME
 
 CREDENTIALS = {CONF_USERNAME: USERNAME, CONF_PASSWORD: PASSWORD}
 
@@ -49,10 +57,13 @@ def _enable_custom_integrations(enable_custom_integrations: None) -> None:
 
 
 @contextmanager
-def _patch_login(side_effect: Exception | None = None) -> Iterator[None]:
+def _patch_login(
+    side_effect: Exception | None = None, info: TokenInfo = TOKEN_INFO
+) -> Iterator[None]:
     """Answer the flow's login attempt, and keep a created entry from loading."""
     client = AsyncMock()
     client.async_login.side_effect = side_effect
+    client.async_login.return_value = info
     with (
         patch(
             "custom_components.perific.config_flow.EnegicClient", return_value=client
@@ -86,7 +97,22 @@ class TestUserFlow:
 
         assert result["type"] is FlowResultType.CREATE_ENTRY
         assert result["title"] == USERNAME
-        assert result["data"] == CREDENTIALS
+        assert result["data"] == ENTRY_DATA
+
+    async def test_the_password_is_traded_for_a_token_and_not_kept(
+        self, hass: HomeAssistant
+    ) -> None:
+        """The entry is what ends up in .storage, so the password must not reach it."""
+        result = await _start_user_flow(hass)
+        with _patch_login():
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"], CREDENTIALS
+            )
+            await hass.async_block_till_done()
+
+        assert CONF_PASSWORD not in result["data"]
+        assert result["data"][CONF_TOKEN] == TOKEN
+        assert result["result"].version == 2
 
     async def test_the_unique_id_is_the_lowercased_username(
         self, hass: HomeAssistant
@@ -150,15 +176,19 @@ class TestUserFlow:
 class TestReauth:
     """Renewing credentials the API has stopped accepting."""
 
-    async def test_a_new_password_is_written_back_to_the_entry(
+    async def test_a_fresh_token_is_written_back_to_the_entry(
         self, hass: HomeAssistant, config_entry: MockConfigEntry
     ) -> None:
+        renewed = TokenInfo(
+            token="99999999-8888-7777-6666-555555555555",
+            valid_to=dt_util.utcnow() + timedelta(days=365),
+        )
         config_entry.add_to_hass(hass)
         result = await config_entry.start_reauth_flow(hass)
         assert result["type"] is FlowResultType.FORM
         assert result["step_id"] == "reauth_confirm"
 
-        with _patch_login():
+        with _patch_login(info=renewed):
             result = await hass.config_entries.flow.async_configure(
                 result["flow_id"], {CONF_PASSWORD: "a new password"}
             )
@@ -166,9 +196,11 @@ class TestReauth:
 
         assert result["type"] is FlowResultType.ABORT
         assert result["reason"] == "reauth_successful"
-        assert config_entry.data[CONF_PASSWORD] == "a new password"
-        # The username is never re-asked for, so it must survive untouched.
+        assert config_entry.data[CONF_TOKEN] == renewed.token
+        assert config_entry.data[CONF_TOKEN_VALID_TO] == renewed.valid_to.isoformat()
+        # Neither the username nor the new password is stored beyond the exchange.
         assert config_entry.data[CONF_USERNAME] == USERNAME
+        assert CONF_PASSWORD not in config_entry.data
 
     @pytest.mark.parametrize(("failure", "expected"), LOGIN_FAILURES)
     async def test_a_failed_reauth_shows_the_form_again(
@@ -188,7 +220,7 @@ class TestReauth:
 
         assert result["type"] is FlowResultType.FORM
         assert result["errors"] == {"base": expected}
-        assert config_entry.data[CONF_PASSWORD] == PASSWORD
+        assert config_entry.data[CONF_TOKEN] == TOKEN
 
 
 class TestOptions:

@@ -6,6 +6,7 @@ and are not inferrable — ``/getlatestpackets`` is a PUT despite being a read.
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientTimeout
@@ -37,13 +38,13 @@ def _retry_after(value: str | None) -> float | None:
 
 
 def _raise_for_status(status: int, path: str, retry_after: str | None) -> None:
-    if status in (401, 403):
+    if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
         raise PerificAuthError(f"{path} rejected the credentials (HTTP {status})")
-    if status == 429:
+    if status == HTTPStatus.TOO_MANY_REQUESTS:
         raise PerificRateLimitError(
             f"{path} is rate limited", retry_after=_retry_after(retry_after)
         )
-    if status >= 400:
+    if status >= HTTPStatus.BAD_REQUEST:
         raise PerificResponseError(f"{path} answered HTTP {status}", status=status)
 
 
@@ -128,7 +129,7 @@ class EnegicClient:
             ) as response:
                 status = response.status
                 retry_after = response.headers.get("Retry-After")
-                if status < 400:
+                if status < HTTPStatus.BAD_REQUEST:
                     payload = await response.json(content_type=None)
         except TimeoutError as err:
             raise PerificConnectionError(f"{path} timed out") from err

@@ -2,31 +2,90 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
-from homeassistant.const import Platform
+from homeassistant.const import CONF_PASSWORD, CONF_TOKEN, CONF_USERNAME, Platform
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
 
-from .api import EnegicClient
+from .api import EnegicClient, PerificAuthError, PerificError
+from .config_flow import PerificConfigFlow, token_entry_data
+from .const import CONF_TOKEN_VALID_TO
 from .coordinator import PerificCoordinator
 
 if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
     from .coordinator import PerificConfigEntry
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: PerificConfigEntry) -> bool:
     """Set up Perific from a config entry."""
-    client = EnegicClient(async_get_clientsession(hass))
+    client = EnegicClient(async_get_clientsession(hass), token=_token(entry))
     coordinator = PerificCoordinator(hass, entry, client)
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    return True
+
+
+def _token(entry: PerificConfigEntry) -> str:
+    """Read the stored token, sending the user to reauth if it cannot be used.
+
+    Expiry is checked here rather than left to the API so that a year-old token
+    prompts for a password instead of spending a request on a certain 401.
+    """
+    token = entry.data.get(CONF_TOKEN)
+    if not token:
+        raise ConfigEntryAuthFailed("No Perific token is stored for this account")
+
+    valid_to = dt_util.parse_datetime(entry.data.get(CONF_TOKEN_VALID_TO) or "")
+    if valid_to is not None and valid_to <= dt_util.utcnow():
+        raise ConfigEntryAuthFailed("The stored Perific token has expired")
+    return str(token)
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate an entry that still holds the account password.
+
+    Version 1 stored the username and password and re-minted a token on every setup.
+    Version 2 stores the token instead, so the password is spent once here and then
+    dropped.
+    """
+    if entry.version > PerificConfigFlow.VERSION:
+        return False
+    if entry.version == 1:
+        client = EnegicClient(async_get_clientsession(hass))
+        username = entry.data[CONF_USERNAME]
+        try:
+            info = await client.async_login(username, entry.data[CONF_PASSWORD])
+        except PerificAuthError:
+            # Migrate anyway, without a token: setup then raises ConfigEntryAuthFailed
+            # and the user is asked for the password once, rather than being left on a
+            # broken entry with a password we already know the API rejects.
+            _LOGGER.warning(
+                "Stored Perific credentials were rejected; reauthentication required"
+            )
+            data = {CONF_USERNAME: username}
+        except PerificError as err:
+            # Transient. Keep the password and let Home Assistant retry the migration
+            # rather than forcing a reauth the user does not actually need.
+            _LOGGER.warning("Could not migrate the Perific entry yet: %s", err)
+            return False
+        else:
+            data = token_entry_data(username, info)
+
+        hass.config_entries.async_update_entry(entry, data=data, version=2)
+
     return True
 
 

@@ -5,7 +5,7 @@ Home Assistant integration for the **Perific One** energy monitor.
 Reads grid import and export from your electricity meter's HAN port via the Enegic cloud API, and
 feeds them to the Energy dashboard and long-term statistics.
 
-> **Early days.** Version 0.2.0, running against one household's meter. The sensors and their typing
+> **Early days.** Version 0.3.0, running against one household's meter. The sensors and their typing
 > are verified, but the API is undocumented and this has been exercised on a single device — expect
 > rough edges, and please open an issue if you hit one.
 
@@ -33,9 +33,10 @@ is.
 ## What it does
 
 The Perific One reads your electricity meter's HAN port and reports to Enegic's cloud. This
-integration polls that cloud API and publishes ten sensors for the meter: cumulative import and
-export energy, live import and export power, and per-phase current and voltage. They feed the Energy
-dashboard, long-term statistics, history and automations like anything else in Home Assistant.
+integration polls that cloud API and publishes twelve sensors for the meter: cumulative import and
+export energy, live import and export power, per-phase current and voltage, and two diagnostics.
+They feed the Energy dashboard, long-term statistics, history and automations like anything else in
+Home Assistant.
 
 What it can't do:
 
@@ -61,6 +62,15 @@ Perific or Enegic, and it relies on an undocumented API that they are free to ch
 | Power exported | W | ✅ | Live. The matching *return to grid* sensor. |
 | Current L1–L3 | A | ✅ | Signed: negative means that phase is exporting. |
 | Voltage L1–L3 | V | ✅ | Diagnostic. |
+| Last packet | — | ✅ | Diagnostic. Timestamp of the newest packet the meter reported. |
+| Status | — | ✅ | Diagnostic. `ok`, `stale`, `no_data` or `offline`. |
+
+Every sensor above goes *unavailable* when its reading is missing, which tells you something is
+wrong but not what. **Status** is the exception: it stays readable through a failed poll, and is
+there to answer which. `offline` means Home Assistant could not reach the API at all; `no_data`
+means the poll succeeded but the meter was not in the response; `stale` means the meter's newest
+packet is more than five minutes old, which usually points at its Wi-Fi rather than at anything
+here. Pair it with **Last packet** to see how long the data has been standing still.
 
 Import and export are separate sensors rather than one signed value because the meter accounts per
 phase, so both can be non-zero at the same moment — one phase exporting while another imports. A net
@@ -77,7 +87,7 @@ dashboard derives net from import and export itself.
 
 ## Requirements
 
-- Home Assistant 2026.9.2 or newer
+- Home Assistant 2026.5.1 or newer — the floor CI runs the whole suite against on every change
 - A Perific account (username and password)
 
 ## Installation
@@ -101,7 +111,11 @@ expected for anything installed outside core.
 Add the integration from **Settings → Devices & Services → Add Integration**, then enter your
 Perific username and password. Nothing goes in `configuration.yaml`.
 
-Tokens are valid for about a year. When one expires, Home Assistant prompts you to sign in again.
+**Your password is not stored.** It is exchanged once for an API token, and only the token and your
+username are written to the config entry. Tokens are valid for about a year; when one expires — or
+if the API rejects it sooner — Home Assistant raises its normal reauthentication prompt and asks for
+the password again to mint a replacement. Upgrading from an earlier version migrates the entry
+automatically: the stored password is spent once and then removed.
 
 **Poll interval.** The default is 60 seconds, changeable under the integration's **Configure**
 button. The energy registers only advance once a minute, so polling faster buys nothing there; the
@@ -118,7 +132,8 @@ that once and then stays quiet, which is easy to miss, so the integration also r
 The integration's **⋮ → Download diagnostics** gives a redacted dump: the config entry, the
 coordinator's health, the meters, and the last raw packets received. The packets are the useful
 part — nearly every failure here is the API returning a shape the parser didn't expect. Your
-username, password and the device's MAC address are removed.
+username, your API token and the device's MAC address are removed. The token's expiry date is left
+in, because it is what explains an unexpected reauthentication prompt.
 
 ### Energy dashboard
 
@@ -147,15 +162,36 @@ have, such as a Nord Pool sensor.
 
 ## Development
 
+The Python environment is managed by [uv](https://docs.astral.sh/uv/), and `uv.lock` pins every
+dependency — including Home Assistant itself, through
+`pytest-homeassistant-custom-component`. Install uv once (`brew install uv`), then:
+
+```bash
+uv sync --locked --group dev               # exactly what CI installs
+uv run pre-commit install                  # lint, types and tests before every commit
+
+uv run pytest
+uv run ruff check . && uv run ruff format --check .
+uv run mypy
+npx prettier --check .                     # JSON — ruff doesn't cover it
+```
+
+CI also runs the suite against the oldest Home Assistant the integration claims to support, which is
+the `minimum-homeassistant` dependency group. Run it locally the same way:
+
+```bash
+uv run --isolated --locked --only-group minimum-homeassistant python -m pytest tests
+```
+
+The floor is declared in three places that must agree — `hacs.json`, that dependency group, and the
+README's requirements — and `tests/test_release_metadata.py` fails if `hacs.json` and the group
+drift apart. The same file checks that `pyproject.toml` and `manifest.json` carry the same version,
+and that every translation covers the same keys as `strings.json`.
+
 ```bash
 docker compose up -d                       # Home Assistant on http://localhost:8123
 ./scripts/dev-sync.sh                      # after editing the integration: copy in, restart
 docker compose logs -f homeassistant       # debug logging is on for this component
-
-pytest
-ruff check . && ruff format --check .
-npx prettier --check .                     # JSON — ruff doesn't cover it
-mypy custom_components/perific/api
 ```
 
 There is no hot reload — Home Assistant imports the integration into its own process, so every

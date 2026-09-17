@@ -14,7 +14,7 @@ from custom_components.perific.diagnostics import (
     async_get_config_entry_diagnostics,
 )
 
-from .conftest import PASSWORD, USERNAME
+from .conftest import TOKEN, USERNAME
 
 METER_ID = 10004
 
@@ -33,10 +33,18 @@ class TestRedaction:
         result = await async_get_config_entry_diagnostics(hass, setup_integration)
 
         assert result["entry"]["data"]["username"] == REDACTED
-        assert result["entry"]["data"]["password"] == REDACTED
+        assert result["entry"]["data"]["token"] == REDACTED
         serialised = json.dumps(result, cls=ExtendedJSONEncoder)
-        assert PASSWORD not in serialised
+        assert TOKEN not in serialised
         assert USERNAME not in serialised
+
+    async def test_the_token_expiry_stays_readable(
+        self, hass: HomeAssistant, setup_integration: MockConfigEntry
+    ) -> None:
+        """It is not a secret, and it is what explains an unexpected reauth prompt."""
+        result = await async_get_config_entry_diagnostics(hass, setup_integration)
+
+        assert result["entry"]["data"]["token_valid_to"] != REDACTED
 
     async def test_the_mac_address_is_redacted(
         self, hass: HomeAssistant, setup_integration: MockConfigEntry

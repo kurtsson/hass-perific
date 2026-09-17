@@ -12,6 +12,12 @@
       },
       "power_export": {
         "default": "mdi:transmission-tower-export"
+      },
+      "last_packet": {
+        "default": "mdi:clock-check-outline"
+      },
+      "status": {
+        "default": "mdi:list-status"
       }
     }
   }

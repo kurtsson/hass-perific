@@ -1,8 +1,8 @@
 """Config flow for Perific.
 
-Credentials are exchanged for a token on every setup rather than persisted, so the
-only thing stored on the entry is the username and password. Annual expiry is handled
-by the reauth step below.
+The password is exchanged for a token during setup and is not kept. The token the
+API mints is valid for a year; when it is finally rejected the reauth step below
+asks for the password again and mints a replacement.
 """
 
 from __future__ import annotations
@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
-from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
+from homeassistant.const import (
+    CONF_PASSWORD,
+    CONF_SCAN_INTERVAL,
+    CONF_TOKEN,
+    CONF_USERNAME,
+)
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
@@ -32,6 +37,7 @@ from .api import (
     PerificRateLimitError,
 )
 from .const import (
+    CONF_TOKEN_VALID_TO,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_SCAN_INTERVAL,
@@ -42,6 +48,8 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from homeassistant.config_entries import ConfigEntry
+
+    from .api import TokenInfo
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -80,14 +88,23 @@ OPTIONS_SCHEMA = vol.Schema(
 )
 
 
-class PerificConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Take a username and password, and prove they work before creating an entry."""
+def token_entry_data(username: str, info: TokenInfo) -> dict[str, Any]:
+    """Build the stored entry data. The password is deliberately not part of it."""
+    return {
+        CONF_USERNAME: username,
+        CONF_TOKEN: info.token,
+        CONF_TOKEN_VALID_TO: info.valid_to.isoformat() if info.valid_to else None,
+    }
 
-    VERSION = 1
+
+class PerificConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Take a username and password, and trade them for a token."""
+
+    VERSION = 2
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> PerificOptionsFlow:
+    def async_get_options_flow(_config_entry: ConfigEntry) -> PerificOptionsFlow:
         """Return the options flow for this entry."""
         return PerificOptionsFlow()
 
@@ -103,19 +120,18 @@ class PerificConfigFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(username.lower())
             self._abort_if_unique_id_configured()
 
-            error = await self._async_check_credentials(
-                username, user_input[CONF_PASSWORD]
-            )
-            if error is None:
-                return self.async_create_entry(title=username, data=user_input)
-            errors["base"] = error
+            info = await self._async_login(username, user_input[CONF_PASSWORD], errors)
+            if info is not None:
+                return self.async_create_entry(
+                    title=username, data=token_entry_data(username, info)
+                )
 
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors
         )
 
     async def async_step_reauth(
-        self, entry_data: Mapping[str, Any]
+        self, _entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Handle a token that the API has stopped accepting."""
         return await self.async_step_reauth_confirm()
@@ -125,43 +141,43 @@ class PerificConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Ask for the password again, against the entry's existing username."""
         entry = self._get_reauth_entry()
+        username = entry.data[CONF_USERNAME]
         errors: dict[str, str] = {}
         if user_input is not None:
-            error = await self._async_check_credentials(
-                entry.data[CONF_USERNAME], user_input[CONF_PASSWORD]
-            )
-            if error is None:
+            info = await self._async_login(username, user_input[CONF_PASSWORD], errors)
+            if info is not None:
                 return self.async_update_reload_and_abort(
-                    entry, data_updates=user_input
+                    entry, data_updates=token_entry_data(username, info)
                 )
-            errors["base"] = error
 
         return self.async_show_form(
             step_id="reauth_confirm",
             data_schema=STEP_REAUTH_SCHEMA,
-            description_placeholders={CONF_USERNAME: entry.data[CONF_USERNAME]},
+            description_placeholders={CONF_USERNAME: username},
             errors=errors,
         )
 
-    async def _async_check_credentials(
-        self, username: str, password: str
-    ) -> str | None:
-        """Return the error key for a failed login, or None when it worked."""
+    async def _async_login(
+        self, username: str, password: str, errors: dict[str, str]
+    ) -> TokenInfo | None:
+        """Mint a token, or record the error key for why it could not be minted."""
         client = EnegicClient(async_get_clientsession(self.hass))
         try:
-            await client.async_login(username, password)
+            info = await client.async_login(username, password)
         except PerificAuthError:
-            return "invalid_auth"
+            errors["base"] = "invalid_auth"
         except PerificConnectionError:
-            return "cannot_connect"
+            errors["base"] = "cannot_connect"
         except PerificRateLimitError:
-            return "rate_limited"
+            errors["base"] = "rate_limited"
         except PerificError:
             _LOGGER.exception("Unexpected response from the Perific API")
-            return "unknown"
+            errors["base"] = "unknown"
         except Exception:
             _LOGGER.exception("Unexpected error signing in to Perific")
-            return "unknown"
+            errors["base"] = "unknown"
+        else:
+            return info
         return None
 
 

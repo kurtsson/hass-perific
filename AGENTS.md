@@ -100,20 +100,39 @@ flow never triggers and the integration just stops updating.
 **Poll slowly.** The API's rate limits are unverified and the community sources contradict each
 other. Faster polling buys nothing — statistics are hourly buckets.
 
+## Environment
+
+**uv** owns the Python environment. `uv.lock` pins everything, Home Assistant included, and it is
+committed — `uv lock --check` runs in CI and in pre-commit, so an unlocked change fails before it
+lands. Run tools through `uv run` so they are the pinned ones rather than whatever is on `PATH`.
+
+```
+uv sync --locked --group dev    # exactly what CI installs
+uv run pre-commit install       # once per clone
+uv run pre-commit run --all-files
+```
+
+Two dependency groups, declared as conflicting so uv resolves both: `dev` pins the deployment
+target, and `minimum-homeassistant` pins the floor promised in `hacs.json`. Changing the floor means
+changing both, plus the README — `tests/test_release_metadata.py` fails if `hacs.json` and the group
+disagree.
+
 ## Linting and formatting
 
 **ruff** does both for Python, configured in `pyproject.toml`. Nothing else — no black, flake8 or
 isort.
 
 ```
-ruff check .            # lint
-ruff check --fix .      # lint and autofix
-ruff format .           # format
+uv run ruff check .            # lint
+uv run ruff check --fix .      # lint and autofix
+uv run ruff format .           # format
 ```
 
-Start the rule selection from Home Assistant core's own ruff configuration rather than inventing
-one. The point is that the idioms we copy from upstream integrations pass unchanged; a bespoke
-ruleset would fight them. Set `target-version` to the Python version the pinned HA image ships.
+`select = ["ALL"]` with an explicit ignore list, so new ruff rules arrive by default rather than
+having to be opted into one at a time. Every entry in `ignore` and `per-file-ignores` carries the
+reason it is there; add the reason with the rule or don't add the rule. When an upstream Home
+Assistant idiom trips a rule, prefer a per-file ignore over rewriting the idiom — the point is that
+code copied from core passes unchanged.
 
 **prettier** covers JSON, which ruff does not read at all. A manifest, `strings.json` or a
 translation that doesn't parse is invisible to every other check here — Home Assistant just drops
@@ -132,10 +151,10 @@ wrapped by hand).
 `.editorconfig` carries the indent conventions. Prettier reads `indent_size` from it, so the two
 have to agree: JSON stays at 2 spaces.
 
-**mypy** runs over the vendored client only:
+**mypy** runs over the vendored client only; the scope is set in `pyproject.toml`:
 
 ```
-mypy custom_components/perific/api
+uv run mypy
 ```
 
 That package is standalone and fully typed, so strict checking is cheap there and catches the
@@ -143,8 +162,8 @@ field-parsing mistakes that would otherwise surface as a silently `None` sensor.
 modules are deliberately out of scope for now — strict typing against HA's own surface costs more
 than it returns at this stage.
 
-Run all of them after anything non-trivial. CI comes later (M6); until then it's on whoever is
-editing.
+The pre-commit hooks run all of them, plus the test suite, and they call the same `uv run` commands
+CI does so a hook can never disagree with CI about which tool it used.
 
 ## Tests
 
@@ -153,9 +172,15 @@ package to the HA version in `docker-compose.yml` — its fixtures track core, a
 confusing failures that look like bugs in our code.
 
 ```
-pytest                                   # everything
-pytest tests/test_api_client.py          # client only, no HA runtime
+uv run pytest                            # everything
+uv run pytest tests/test_api_client.py   # client only, no HA runtime
+
+uv run --isolated --locked --only-group minimum-homeassistant python -m pytest tests
 ```
+
+The last one is the oldest supported Home Assistant. It is not redundant with the first: the two
+HA versions disagree about parts of the helper surface, and it has already caught a registry call
+that was deprecated at the top of the range and absent at the bottom.
 
 Conventions:
 

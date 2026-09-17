@@ -11,7 +11,7 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.diagnostics import async_redact_data
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_PASSWORD, CONF_TOKEN, CONF_USERNAME
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -19,12 +19,14 @@ if TYPE_CHECKING:
     from .coordinator import PerificConfigEntry
 
 # Item IDs are kept: they tie the packets to the meters and are meaningless off the
-# account. A MAC address identifies hardware to anyone reading a public issue.
-TO_REDACT = {CONF_USERNAME, CONF_PASSWORD, "mac_address"}
+# account. A MAC address identifies hardware to anyone reading a public issue. The
+# token's expiry stays visible — it is what explains a reauth prompt. CONF_PASSWORD
+# is only reachable on an entry that has not migrated to token storage yet.
+TO_REDACT = {CONF_USERNAME, CONF_PASSWORD, CONF_TOKEN, "mac_address"}
 
 
 async def async_get_config_entry_diagnostics(
-    hass: HomeAssistant, entry: PerificConfigEntry
+    _hass: HomeAssistant, entry: PerificConfigEntry
 ) -> dict[str, Any]:
     """Dump the entry, the coordinator's health, and the last packets seen."""
     coordinator = entry.runtime_data

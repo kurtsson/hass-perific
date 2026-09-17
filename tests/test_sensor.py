@@ -8,7 +8,7 @@ place that mistake surfaces loudly.
 from __future__ import annotations
 
 from dataclasses import replace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.components.sensor import (
@@ -29,10 +29,23 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.perific.api import BUCKET_MINUTE, BUCKET_REALTIME
-from custom_components.perific.const import DOMAIN
+from custom_components.perific.api import (
+    BUCKET_MINUTE,
+    BUCKET_REALTIME,
+    PerificConnectionError,
+)
+from custom_components.perific.const import (
+    DOMAIN,
+    KEY_LAST_PACKET,
+    KEY_STATUS,
+    STATUS_NO_DATA,
+    STATUS_OFFLINE,
+    STATUS_OK,
+    STATUS_STALE,
+)
 
 METER_ID = 10004
 ENERGY_KEYS = ("energy_import", "energy_export")
@@ -40,7 +53,9 @@ POWER_KEYS = ("power_import", "power_export")
 CURRENT_KEYS = tuple(f"current_l{phase}" for phase in (1, 2, 3))
 VOLTAGE_KEYS = tuple(f"voltage_l{phase}" for phase in (1, 2, 3))
 REALTIME_KEYS = POWER_KEYS + CURRENT_KEYS + VOLTAGE_KEYS
-KEYS = ENERGY_KEYS + REALTIME_KEYS
+# Everything read straight out of a packet, so everything that can go unavailable.
+KEYS = ENERGY_KEYS + REALTIME_KEYS + (KEY_LAST_PACKET,)
+ALL_KEYS = (*KEYS, KEY_STATUS)
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +70,7 @@ def entity_ids(
     """Look entities up by unique id rather than guessing their entity ids."""
     registry = er.async_get(hass)
     found = {}
-    for key in KEYS:
+    for key in ALL_KEYS:
         entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{METER_ID}_{key}")
         assert entity_id is not None
         found[key] = entity_id
@@ -189,8 +204,8 @@ class TestValue:
         await setup_integration.runtime_data.async_refresh()
         await hass.async_block_till_done()
 
-        for entity_id in entity_ids.values():
-            assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+        for key in KEYS:
+            assert hass.states.get(entity_ids[key]).state == STATE_UNAVAILABLE
 
     @pytest.mark.parametrize(
         ("dropped", "lost", "kept"),
@@ -245,10 +260,13 @@ class TestIdentity:
     async def test_the_device_carries_what_the_item_reported(
         self, hass: HomeAssistant, setup_integration: MockConfigEntry
     ) -> None:
-        device = dr.async_get(hass).async_get_device_by_identifier(
-            (DOMAIN, str(METER_ID)), setup_integration.entry_id
+        # Looked up through the config entry rather than by identifier: the two
+        # single-device lookups are split across the supported version range, one
+        # deprecated at the top of it and one absent from the bottom.
+        devices = dr.async_entries_for_config_entry(
+            dr.async_get(hass), setup_integration.entry_id
         )
-        assert device is not None
+        device = next(d for d in devices if (DOMAIN, str(METER_ID)) in d.identifiers)
         assert device.manufacturer == "Perific"
         assert device.model == "EM2One"
         assert device.sw_version == "4.5.15"
@@ -261,8 +279,93 @@ class TestIdentity:
             er.async_get(hass), setup_integration.entry_id
         )
         assert sorted(entity.unique_id for entity in entities) == sorted(
-            f"{METER_ID}_{key}" for key in KEYS
+            f"{METER_ID}_{key}" for key in ALL_KEYS
         )
+
+
+def _restamp(mock_client: AsyncMock, when: object) -> None:
+    """Re-serve the captured packets as though they had just arrived."""
+    packets = mock_client.async_get_latest_packets.return_value
+    entry = packets[METER_ID]
+    mock_client.async_get_latest_packets.return_value = {
+        METER_ID: replace(
+            entry,
+            packets={
+                bucket: replace(packet, timestamp=when)
+                for bucket, packet in entry.packets.items()
+            },
+        )
+    }
+
+
+def _set_energy_import(mock_client: AsyncMock, value: float | None) -> None:
+    """Rewrite the served minute packet's import register."""
+    packets = mock_client.async_get_latest_packets.return_value
+    entry = packets[METER_ID]
+    minute = entry.packets[BUCKET_MINUTE]
+    mock_client.async_get_latest_packets.return_value = {
+        METER_ID: replace(
+            entry,
+            packets={
+                **entry.packets,
+                BUCKET_MINUTE: replace(
+                    minute, data=replace(minute.data, energy_import=value)
+                ),
+            },
+        )
+    }
+
+
+class TestStatus:
+    """The one entity that has to stay readable when the others go dark."""
+
+    async def test_captured_packets_read_as_stale(
+        self, hass: HomeAssistant, entity_ids: dict[str, str]
+    ) -> None:
+        """The fixtures are a recording, so their timestamps are long past."""
+        assert hass.states.get(entity_ids[KEY_STATUS]).state == STATUS_STALE
+
+    async def test_a_fresh_packet_reads_as_ok(
+        self,
+        hass: HomeAssistant,
+        entity_ids: dict[str, str],
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        _restamp(mock_client, dt_util.utcnow())
+        await setup_integration.runtime_data.async_refresh()
+        await hass.async_block_till_done()
+
+        assert hass.states.get(entity_ids[KEY_STATUS]).state == STATUS_OK
+        assert hass.states.get(entity_ids[KEY_LAST_PACKET]).state != STATE_UNAVAILABLE
+
+    async def test_a_meter_that_drops_out_reads_as_no_data(
+        self,
+        hass: HomeAssistant,
+        entity_ids: dict[str, str],
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        mock_client.async_get_latest_packets.return_value = {}
+        await setup_integration.runtime_data.async_refresh()
+        await hass.async_block_till_done()
+
+        assert hass.states.get(entity_ids[KEY_STATUS]).state == STATUS_NO_DATA
+
+    async def test_a_failed_poll_reads_as_offline_rather_than_unavailable(
+        self,
+        hass: HomeAssistant,
+        entity_ids: dict[str, str],
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """Every other entity goes unavailable here, which says nothing about why."""
+        mock_client.async_get_latest_packets.side_effect = PerificConnectionError("out")
+        await setup_integration.runtime_data.async_refresh()
+        await hass.async_block_till_done()
+
+        assert hass.states.get(entity_ids["power_import"]).state == STATE_UNAVAILABLE
+        assert hass.states.get(entity_ids[KEY_STATUS]).state == STATUS_OFFLINE
 
 
 class TestMonotonicityGuard:
@@ -280,21 +383,7 @@ class TestMonotonicityGuard:
         energy_import: float | None,
     ) -> None:
         """Serve one more packet carrying the given import register."""
-        packets = mock_client.async_get_latest_packets.return_value
-        entry = packets[METER_ID]
-        minute = entry.packets[BUCKET_MINUTE]
-        mock_client.async_get_latest_packets.return_value = {
-            METER_ID: replace(
-                entry,
-                packets={
-                    **entry.packets,
-                    BUCKET_MINUTE: replace(
-                        minute,
-                        data=replace(minute.data, energy_import=energy_import),
-                    ),
-                },
-            )
-        }
+        _set_energy_import(mock_client, energy_import)
         await setup_integration.runtime_data.async_refresh()
         await hass.async_block_till_done()
 
@@ -366,6 +455,31 @@ class TestMonotonicityGuard:
 
         await self._poll(hass, setup_integration, mock_client, 1000.0)
         assert float(self._state(hass, entity_ids)) == 248718.155
+
+    async def test_the_baseline_survives_a_restart(
+        self,
+        hass: HomeAssistant,
+        entity_ids: dict[str, str],
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """Held in memory alone, the first reading after a restart is the baseline.
+
+        A register that fell while Home Assistant was down would then be published
+        as a meter reset, which is exactly what the guard exists to stop.
+        """
+        entity_id = entity_ids["energy_import"]
+        assert float(hass.states.get(entity_id).state) == 248718.155
+
+        assert await hass.config_entries.async_unload(setup_integration.entry_id)
+        await hass.async_block_till_done()
+
+        _set_energy_import(mock_client, 1000.0)
+        with patch("custom_components.perific.EnegicClient", return_value=mock_client):
+            await hass.config_entries.async_setup(setup_integration.entry_id)
+            await hass.async_block_till_done()
+
+        assert float(hass.states.get(entity_id).state) == 248718.155
 
     async def test_power_is_not_guarded(
         self,

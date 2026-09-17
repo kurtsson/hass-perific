@@ -6,50 +6,85 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # A newer push to the same branch makes the running job pointless.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  # Pinned so CI resolves the lockfile with the same uv as local development.
+  UV_VERSION: "0.12.15"
 
 jobs:
   test:
     name: Lint, types and tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v10
         with:
-          # Held to the version Home Assistant 2026.9.2 requires, alongside the pin in
-          # pyproject.toml and the image in docker-compose.yml.
-          python-version: "3.14"
+          enable-cache: true
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install Python
+        run: uv python install
 
       - name: Install
-        run: pip install --group dev
+        run: uv sync --locked --group dev
+
+      - name: Check the lockfile is current
+        run: uv lock --check
 
       - name: Ruff
         run: |
-          ruff check .
-          ruff format --check .
+          uv run --no-sync ruff check .
+          uv run --no-sync ruff format --check .
 
       - name: Mypy
-        run: mypy --strict custom_components/perific/api
+        run: uv run --no-sync mypy
 
       - name: Pytest
-        run: pytest -q
+        run: uv run --no-sync pytest -q
+
+  minimum-homeassistant:
+    name: Oldest supported Home Assistant
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install Python
+        run: uv python install
+
+      # The floor promised in hacs.json. Without this job that promise is untested,
+      # and the version split it already caught in the device registry would have
+      # shipped as a crash on older installs.
+      - name: Pytest
+        run: >
+          uv run --isolated --locked
+          --only-group minimum-homeassistant
+          python -m pytest tests -q
 
   hassfest:
     name: hassfest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: home-assistant/actions/hassfest@master
 
   hacs:
     name: HACS
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: hacs/action@main
         with:
           category: integration

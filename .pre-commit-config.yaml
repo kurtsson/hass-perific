@@ -1,0 +1,45 @@
+# Install once per clone with: uv run pre-commit install
+#
+# Every hook runs the repo's own pinned tools through uv, so a hook can never
+# disagree with CI about which ruff or mypy it is.
+minimum_pre_commit_version: "4.0.0"
+default_install_hook_types:
+  - pre-commit
+
+repos:
+  - repo: local
+    hooks:
+      - id: uv-lock-check
+        name: uv lock is current
+        entry: uv lock --check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --no-sync ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --no-sync ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: mypy
+        name: mypy
+        entry: uv run --no-sync mypy
+        language: system
+        pass_filenames: false
+        files: ^custom_components/perific/api/
+
+      - id: pytest
+        name: pytest
+        entry: uv run --no-sync pytest -q
+        language: system
+        pass_filenames: false
+        types: [python]

@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_PASSWORD, CONF_TOKEN, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.perific.api import (
@@ -19,9 +21,13 @@ from custom_components.perific.api import (
     PerificResponseError,
     parse_latest_packets,
 )
-from custom_components.perific.const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from custom_components.perific.const import (
+    CONF_TOKEN_VALID_TO,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+)
 
-from .conftest import PASSWORD, USERNAME
+from .conftest import PASSWORD, TOKEN, TOKEN_VALID_TO, USERNAME
 
 
 @pytest.fixture(autouse=True)
@@ -53,14 +59,19 @@ class TestSetup:
         self, setup_integration: MockConfigEntry, mock_client: AsyncMock
     ) -> None:
         assert setup_integration.state is ConfigEntryState.LOADED
-        mock_client.async_login.assert_awaited_once_with(USERNAME, PASSWORD)
         assert setup_integration.runtime_data.meters
 
-    async def test_credentials_are_exchanged_on_every_setup(
-        self, setup_integration: MockConfigEntry
+    async def test_the_stored_token_is_used_without_signing_in_again(
+        self, setup_integration: MockConfigEntry, mock_client: AsyncMock
     ) -> None:
-        """No token is persisted, so nothing stale can be loaded from disk."""
-        assert set(setup_integration.data) == {CONF_USERNAME, CONF_PASSWORD}
+        """Setup spends no credentials: the password was traded for a token once."""
+        mock_client.async_login.assert_not_awaited()
+        assert set(setup_integration.data) == {
+            CONF_USERNAME,
+            CONF_TOKEN,
+            CONF_TOKEN_VALID_TO,
+        }
+        assert CONF_PASSWORD not in setup_integration.data
 
     async def test_unloading_releases_the_entry(
         self, hass: HomeAssistant, setup_integration: MockConfigEntry
@@ -69,13 +80,47 @@ class TestSetup:
         await hass.async_block_till_done()
         assert setup_integration.state is ConfigEntryState.NOT_LOADED
 
-    async def test_bad_credentials_start_reauth_rather_than_retrying(
+    async def test_a_rejected_token_starts_reauth_rather_than_retrying(
         self, hass: HomeAssistant, config_entry: MockConfigEntry, mock_client: AsyncMock
     ) -> None:
-        mock_client.async_login.side_effect = PerificAuthError("rejected")
+        mock_client.async_get_meters.side_effect = PerificAuthError("rejected")
         await _setup(hass, config_entry, mock_client)
 
         assert config_entry.state is ConfigEntryState.SETUP_ERROR
+        assert len(_reauth_flows(hass)) == 1
+
+    async def test_a_missing_token_starts_reauth(
+        self, hass: HomeAssistant, mock_client: AsyncMock
+    ) -> None:
+        """An entry that migrated without one has to ask for the password."""
+        entry = MockConfigEntry(
+            domain=DOMAIN, unique_id=USERNAME, version=2, data={CONF_USERNAME: USERNAME}
+        )
+        await _setup(hass, entry, mock_client)
+
+        assert entry.state is ConfigEntryState.SETUP_ERROR
+        assert len(_reauth_flows(hass)) == 1
+
+    async def test_an_expired_token_is_not_spent_on_a_certain_401(
+        self, hass: HomeAssistant, mock_client: AsyncMock
+    ) -> None:
+        """The API is never called: the stored expiry already settles it."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            unique_id=USERNAME,
+            version=2,
+            data={
+                CONF_USERNAME: USERNAME,
+                CONF_TOKEN: TOKEN,
+                CONF_TOKEN_VALID_TO: (
+                    dt_util.utcnow() - timedelta(minutes=1)
+                ).isoformat(),
+            },
+        )
+        await _setup(hass, entry, mock_client)
+
+        assert entry.state is ConfigEntryState.SETUP_ERROR
+        mock_client.async_get_meters.assert_not_awaited()
         assert len(_reauth_flows(hass)) == 1
 
     @pytest.mark.parametrize(
@@ -203,4 +248,54 @@ class TestPolling:
 
         assert not coordinator.last_update_success
         assert setup_integration.state is ConfigEntryState.LOADED
+        assert not _reauth_flows(hass)
+
+
+class TestMigration:
+    """Version 1 entries hold the password; version 2 holds a token instead."""
+
+    async def test_the_password_is_spent_once_and_dropped(
+        self,
+        hass: HomeAssistant,
+        legacy_config_entry: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        await _setup(hass, legacy_config_entry, mock_client)
+
+        mock_client.async_login.assert_awaited_once_with(USERNAME, PASSWORD)
+        assert legacy_config_entry.version == 2
+        assert legacy_config_entry.state is ConfigEntryState.LOADED
+        assert legacy_config_entry.data == {
+            CONF_USERNAME: USERNAME,
+            CONF_TOKEN: TOKEN,
+            CONF_TOKEN_VALID_TO: TOKEN_VALID_TO.isoformat(),
+        }
+
+    async def test_a_rejected_password_migrates_into_a_reauth_prompt(
+        self,
+        hass: HomeAssistant,
+        legacy_config_entry: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """Better than leaving the entry on a password the API already refuses."""
+        mock_client.async_login.side_effect = PerificAuthError("rejected")
+        await _setup(hass, legacy_config_entry, mock_client)
+
+        assert legacy_config_entry.version == 2
+        assert CONF_PASSWORD not in legacy_config_entry.data
+        assert len(_reauth_flows(hass)) == 1
+
+    async def test_a_transient_failure_keeps_the_password_for_a_retry(
+        self,
+        hass: HomeAssistant,
+        legacy_config_entry: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """The network being down is no reason to make the user type it again."""
+        mock_client.async_login.side_effect = PerificConnectionError("down")
+        await _setup(hass, legacy_config_entry, mock_client)
+
+        assert legacy_config_entry.version == 1
+        assert legacy_config_entry.data[CONF_PASSWORD] == PASSWORD
+        assert legacy_config_entry.state is ConfigEntryState.MIGRATION_ERROR
         assert not _reauth_flows(hass)

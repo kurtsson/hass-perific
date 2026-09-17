@@ -80,6 +80,18 @@
       },
       "voltage_l3": {
         "name": "Voltage L3"
+      },
+      "last_packet": {
+        "name": "Last packet"
+      },
+      "status": {
+        "name": "Status",
+        "state": {
+          "ok": "OK",
+          "stale": "Data is stale",
+          "no_data": "No data",
+          "offline": "Cannot reach Perific"
+        }
       }
     }
   }

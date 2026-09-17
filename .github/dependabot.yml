@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # One PR for the whole dev toolchain. The Home Assistant pin moves with
+      # pytest-homeassistant-custom-component, so these travel together anyway.
+      dev:
+        patterns: ["*"]

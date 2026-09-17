@@ -76,13 +76,25 @@ owns the client and the discovered meters, and a wrapper holding a single field 
 
 ### Authentication leans on HA's reauth flow
 
-The config flow takes a username and password, calls `PUT /createtoken`, and holds the token in
-memory. Tokens last about a year.
+The config flow takes a username and password, calls `PUT /createtoken`, and stores the token and
+its expiry on the config entry. **The password is not stored.** Tokens last about a year.
 
-Deliberately **not** implemented: persisting the token to disk, and re-minting inside an expiry
-margin. A fresh login on each HA restart costs one request and removes a whole class of
-stale-credential-on-disk bugs. For the annual expiry, HA already has the right mechanism — raise
-`ConfigEntryAuthFailed` and the UI prompts for the password.
+The alternative — keeping the password and re-minting on every setup — was what the first version
+did. It is simpler, but it puts a reusable account credential in `.storage` in plaintext for the
+life of the integration, and spends a login on every restart, reload and options change against an
+API whose rate limits are unmeasured. A token is narrower in blast radius, revocable, and already
+has somewhere to go when it stops working.
+
+Expiry is checked locally before the first request, so a year-old token prompts for a password
+instead of spending a request on a certain 401.
+
+Deliberately **not** implemented: re-minting inside an expiry margin. That would require keeping the
+password, which is the thing being avoided. For the annual expiry HA already has the right
+mechanism — raise `ConfigEntryAuthFailed` and the UI prompts for the password once.
+
+Entries created by the first version are migrated on load: the stored password is spent once for a
+token and then removed. A rejected password still migrates, into a reauth prompt; a network failure
+does not, so the password survives for the retry rather than forcing a reauth nobody needed.
 
 The constraint that makes this work: **`ConfigEntryAuthFailed` must be raised directly, never
 wrapped in `UpdateFailed`.** Wrapped, the coordinator treats it as a transient failure, reauth never
@@ -219,7 +231,8 @@ repositories at all. Hence a deploy script.
 
 | Condition | Raised | Effect |
 |---|---|---|
-| Bad credentials at setup | `ConfigEntryAuthFailed` | Entry enters reauth; UI prompts for password |
+| Missing or expired token at setup | `ConfigEntryAuthFailed` | Entry enters reauth before any request is made |
+| Token rejected at setup | `ConfigEntryAuthFailed` | Entry enters reauth; UI prompts for password |
 | API unreachable at setup | `ConfigEntryNotReady` | HA retries setup with backoff |
 | No supported items on the account | `ConfigEntryNotReady` | Retried; a real account shouldn't hit this |
 | 401 during a poll | `ConfigEntryAuthFailed` — **unwrapped** | Reauth triggers |
