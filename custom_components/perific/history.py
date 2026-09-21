@@ -413,7 +413,7 @@ class HistoryImporter:
             return 0
         try:
             return await self.async_import_since(None)
-        except (PerificError, ValueError):
+        except PerificError, ValueError:
             _LOGGER.exception("History import failed")
             return 0
 
