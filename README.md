@@ -1,4 +1,11 @@
-# hass-perific
+# Home Assistant Perific Custom Integration (hass-perific)
+
+[![CI](https://github.com/kurtsson/hass-perific/actions/workflows/ci.yml/badge.svg)](https://github.com/kurtsson/hass-perific/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/kurtsson/hass-perific)](https://github.com/kurtsson/hass-perific/releases)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.5.1%2B-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io)
+[![HACS](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![License](https://img.shields.io/github/license/kurtsson/hass-perific)](LICENSE)
 
 Home Assistant integration for the **Perific One** energy monitor.
 
@@ -114,6 +121,11 @@ Through [HACS](https://hacs.xyz), as a custom repository:
 3. Add, then install **Perific** from the HACS list
 4. Restart Home Assistant
 5. **Settings → Devices & Services → Add Integration → Perific**
+
+This button does steps 1 and 2 for you, if you have
+[My Home Assistant](https://my.home-assistant.io) set up:
+
+[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=kurtsson&repository=hass-perific&category=integration)
 
 Or by hand: copy `custom_components/perific/` into your Home Assistant `config/custom_components/`
 and restart.

@@ -17,3 +17,11 @@ updates:
       # pytest-homeassistant-custom-component, so these travel together anyway.
       dev:
         patterns: ["*"]
+    ignore:
+      # Dependabot sees one pyproject.toml and cannot target a single
+      # dependency group, so a bump here also rewrites the pin in
+      # `minimum-homeassistant` — the one that fixes the floor at the oldest
+      # Home Assistant hacs.json claims. Raising both leaves the floor job
+      # testing the same version as the dev job. Bump it by hand instead,
+      # together with hacs.json, the README and docker-compose.yml.
+      - dependency-name: pytest-homeassistant-custom-component
