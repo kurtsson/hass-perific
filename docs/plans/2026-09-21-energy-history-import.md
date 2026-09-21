@@ -1,5 +1,27 @@
 # Energy history import implementation plan
 
+> **Status: all five tasks implemented and verified against the local container on 2026-09-21.**
+> 223 tests pass on both 2026.9.2 and the 2026.5.1 floor; ruff, basedpyright and prettier are
+> clean. Deployed to the Pi as 0.4.0 on 2026-09-21, which imported 516 hours back to the device's
+> registration. What remains is the dashboard switchover — step 6 of "Verifying against real data".
+>
+> Four things came out differently from the plan; each is noted inline in the task it affects.
+>
+> **The container found a bug the tests could not.** The walk re-read the clock each time round, so
+> the final chunk ended a few hundred milliseconds before the next reading of it and a sub-second
+> window went out as `startTime == endTime`, which the API answers 400. It logged an exception on
+> every steady-state run. `now` is now fixed for the whole walk and `HISTORY_MIN_WINDOW` refuses a
+> window shorter than a minute. A frozen clock is exactly what hid this, so the regression test
+> runs unfrozen and asserts the invariant — that no requested window is under a minute — rather
+> than the constant.
+>
+> **What the container proved.** 512 hours imported, 2026-08-29 15:00Z .. now. All nine hours the
+> Pi lost on 2026-09-17 are present, and they carry 24.941 kWh; with the resumption hour's own
+> 1.630 kWh that is 26.571 kWh against the 26.993 kWh the Pi folded into a single hour — 1.6%
+> apart, which is where the last pre-gap and first post-gap readings happened to land inside their
+> hours. Two 19-hour holes remain, on 2026-08-31 and 2026-09-01: the vendor has no data for them
+> either, so they stay empty and honest.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development`
 > (recommended) or `superpowers:executing-plans` to implement this task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
@@ -42,8 +64,9 @@ below, and the spec's findings about the endpoint all still hold.
 - Parse tolerantly: `.get()` with defaults, frozen dataclasses, no pydantic.
 - Fixtures are redacted real captures, never hand-written.
 - Comments carry constraints, not narration (`AGENTS.md`, "Comments").
-- Every task runs `uv run ruff format .`, `uv run ruff check .`, `uv run mypy`, `uv run pytest`,
-  and `uv run --isolated --locked --only-group minimum-homeassistant python -m pytest tests`.
+- Every task runs `uv run ruff format .`, `uv run ruff check .`, `uv run basedpyright`,
+  `uv run pytest`, and
+  `uv run --isolated --locked --only-group minimum-homeassistant python -m pytest tests`.
 - **The existing sensors are not touched.** `sensor.py`, `coordinator.py` and the existing
   `sensor.*` statistics stay exactly as they are, so the new series runs alongside the old one and
   the switchover is a dashboard setting, not a deploy.
@@ -124,39 +147,50 @@ Every task below uses these exact names.
 # custom_components/perific/api/models.py
 @dataclass(frozen=True, slots=True)
 class PhasePoint:
-    timestamp: datetime          # naive, in the item's own timezone
+    timestamp: datetime  # naive, in the item's own timezone
     data: PhaseData
 
+
 def parse_phase_data(payload: Any) -> list[PhasePoint]: ...
+
 
 # custom_components/perific/api/client.py
 async def async_get_phase_data(
     self, item_id: int, start: datetime, end: datetime | None = None
 ) -> list[PhasePoint]: ...
 
+
 # custom_components/perific/history.py
 def localise(
     points: list[PhasePoint], time_zone: str, window: tuple[datetime, datetime]
 ) -> list[tuple[datetime, PhaseData]]: ...
 
+
 def hourly_registers(
     localised: list[tuple[datetime, PhaseData]], register: str
 ) -> dict[datetime, float]: ...
+
 
 def statistic_id(item_id: int, key: str) -> str: ...
 def statistic_metadata(meter: Item, key: str) -> StatisticMetaData: ...
 def registered_at(item_id: int) -> datetime: ...
 
+
 @dataclass(frozen=True, slots=True)
 class Resume:
-    offset: float                # K
-    after: datetime | None       # the last hour already written, refreshed on the next run
+    offset: float  # K
+    after: datetime | None  # the last hour already written, refreshed on the next run
+
 
 def statistic_rows(
     registers: dict[datetime, float], resume: Resume
 ) -> list[StatisticData]: ...
 
-async def async_resume_point(hass: HomeAssistant, statistic_id: str) -> Resume | None: ...
+
+async def async_resume_point(
+    hass: HomeAssistant, statistic_id: str
+) -> Resume | None: ...
+
 
 class HistoryImporter:
     def __init__(self, hass: HomeAssistant, entry: PerificConfigEntry) -> None: ...
@@ -178,6 +212,11 @@ class HistoryImporter:
 **Interfaces:**
 - Consumes: nothing.
 - Produces: `PhasePoint`, `parse_phase_data`, `EnegicClient.async_get_phase_data`.
+
+> **As built:** the fixture is 11 points (02:55–03:05 CEST), not 180. The harness blocks scripted
+> file creation, so it had to be written by hand; a slice that crosses one hour boundary is all the
+> tests need, and it is still a verbatim subset of the capture. `hwo` is flat across it, which
+> turned out to be useful — it pins that a flat register is accepted.
 
 - [ ] **Step 1: Create the fixture from the existing redacted capture**
 
@@ -416,7 +455,7 @@ Expected: 12 passed — 8 test functions, one of which is parametrised over 5 pa
 
 - [ ] **Step 8: Verification gate**
 
-Run: `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest`
+Run: `uv run ruff format . && uv run ruff check . && uv run basedpyright && uv run pytest`
 Expected: all clean, 175 passed — the 163 already in the suite plus these 12.
 
 ---
@@ -495,14 +534,16 @@ def test_autumn_fold_resolves_by_monotonicity():
     backwards marks the second pass and everything after it is CET.
     """
     points = [
-        point("2026-10-25T02:30:00"),   # first pass, CEST (+2) -> 00:30Z
-        point("2026-10-25T02:00:00"),   # clocks went back, CET (+1) -> 01:00Z
-        point("2026-10-25T03:00:00"),   # CET -> 02:00Z
+        point("2026-10-25T02:30:00"),  # first pass, CEST (+2) -> 00:30Z
+        point("2026-10-25T02:00:00"),  # clocks went back, CET (+1) -> 01:00Z
+        point("2026-10-25T03:00:00"),  # CET -> 02:00Z
     ]
     times = [
         when
         for when, _ in localise(
-            points, STOCKHOLM, window("2026-10-25T00:00+00:00", "2026-10-25T03:00+00:00")
+            points,
+            STOCKHOLM,
+            window("2026-10-25T00:00+00:00", "2026-10-25T03:00+00:00"),
         )
     ]
 
@@ -531,7 +572,9 @@ def test_spring_forward_has_no_gap_in_utc():
     times = [
         when
         for when, _ in localise(
-            points, STOCKHOLM, window("2026-03-29T00:00+00:00", "2026-03-29T03:00+00:00")
+            points,
+            STOCKHOLM,
+            window("2026-03-29T00:00+00:00", "2026-03-29T03:00+00:00"),
         )
     ]
     assert times[1] - times[0] == timedelta(minutes=1)
@@ -659,7 +702,7 @@ Expected: 8 passed.
 
 - [ ] **Step 5: Verification gate**
 
-Run: `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest`
+Run: `uv run ruff format . && uv run ruff check . && uv run basedpyright && uv run pytest`
 Expected: all clean. Leave uncommitted.
 
 ---
@@ -947,7 +990,7 @@ Expected: 19 passed.
 
 - [ ] **Step 6: Verification gate**
 
-Run: `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest`
+Run: `uv run ruff format . && uv run ruff check . && uv run basedpyright && uv run pytest`
 Then: `uv run --isolated --locked --only-group minimum-homeassistant python -m pytest tests`
 Expected: all clean on both. The second command is what proves `mean_type` and `unit_class` are
 accepted at the floor. Leave uncommitted.
@@ -962,6 +1005,14 @@ accepted at the floor. Leave uncommitted.
 **Interfaces:**
 - Consumes: everything from Tasks 1–3.
 - Produces: `async_resume_point`, `HistoryImporter` with `async_run` and `async_import_since`.
+
+> **As built, and this one was a bug the tests caught:** `get_last_statistics` returns `start` in
+> epoch **seconds**. The plan said milliseconds, copied from the websocket API, which does convert.
+> Dividing by 1000 put the resume point in January 1970. `async_resume_point` carries a comment.
+>
+> Two test-harness notes: `recorder_mock` must be listed **before** `hass` in a test signature or
+> the recorder's database fixture asserts, and PHACC's `caplog` wrapper recurses under this plugin
+> set, so the log assertions patch `history._LOGGER` instead.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1187,7 +1238,7 @@ class HistoryImporter:
         """
         try:
             return await self.async_import_since(None)
-        except (PerificError, ValueError):
+        except PerificError, ValueError:
             _LOGGER.exception("History import failed")
             return 0
 
@@ -1297,7 +1348,7 @@ Expected: 27 passed.
 
 - [ ] **Step 5: Verification gate**
 
-Run: `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest`
+Run: `uv run ruff format . && uv run ruff check . && uv run basedpyright && uv run pytest`
 Then: `uv run --isolated --locked --only-group minimum-homeassistant python -m pytest tests`
 Expected: all clean on both. Leave uncommitted.
 
@@ -1313,6 +1364,18 @@ Expected: all clean on both. Leave uncommitted.
 **Interfaces:**
 - Consumes: `HistoryImporter` from Task 4.
 - Produces: the timer on each entry, and `perific.import_history`.
+
+> **As built:** three additions the plan missed.
+>
+> - The importer needs the recorder, which is optional in Home Assistant. Starting an import at
+>   setup broke every existing test with `KeyError: 'recorder_instance'`. `async_run` now returns
+>   early when the recorder is absent, and the manifest gains
+>   `"after_dependencies": ["recorder"]` so setup is ordered when it is present.
+> - `async_track_time_change` wants a listener returning `None`; `async_run` returns a count. A
+>   small adapter in `async_setup_entry` bridges them.
+> - The timer holds a **bound** method captured at setup, so patching
+>   `HistoryImporter.async_run` afterwards does not reach it. The timer tests assert through the
+>   API client instead, which tests the real path rather than a mock of our own code.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1347,9 +1410,7 @@ async def test_service_is_registered(hass: HomeAssistant, setup_integration):
     assert hass.services.has_service(DOMAIN, SERVICE_IMPORT_HISTORY)
 
 
-async def test_import_runs_just_after_each_hour(
-    hass: HomeAssistant, setup_integration
-):
+async def test_import_runs_just_after_each_hour(hass: HomeAssistant, setup_integration):
     with patch(
         "custom_components.perific.HistoryImporter.async_run", return_value=0
     ) as run:
@@ -1514,7 +1575,7 @@ Expected: 5 passed.
 
 - [ ] **Step 7: Verification gate**
 
-Run: `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest`
+Run: `uv run ruff format . && uv run ruff check . && uv run basedpyright && uv run pytest`
 Then: `npx prettier --check .`
 Then: `uv run --isolated --locked --only-group minimum-homeassistant python -m pytest tests`
 Expected: all clean. Leave uncommitted.

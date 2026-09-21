@@ -1,6 +1,6 @@
 [project]
 name = "hass-perific"
-version = "0.3.1"
+version = "0.4.0"
 description = "Home Assistant custom integration for the Perific / Enegic energy monitor"
 requires-python = ">=3.14.2"
 
@@ -14,7 +14,7 @@ dev = [
     # docker-compose.yml. The minimum-homeassistant group below is what proves the
     # floor in hacs.json still works.
     "pytest-homeassistant-custom-component==0.13.365",
-    "mypy==2.3.1",
+    "basedpyright==1.31.6",
     "pre-commit>=4.0",
     "ruff==0.16.7",
 ]
@@ -116,10 +116,68 @@ testpaths = ["tests"]
 # custom_components/ is a namespace package; this is what makes it importable.
 pythonpath = ["."]
 
-[tool.mypy]
-python_version = "3.14"
-strict = true
-# Scoped to the vendored client only: it is standalone and fully typed, so strict
-# checking is cheap here and catches the field-parsing errors that would otherwise
-# surface as a silently None sensor. The HA-facing modules are deliberately excluded.
-files = ["custom_components/perific/api"]
+[tool.basedpyright]
+pythonVersion = "3.14"
+include = ["custom_components/perific", "tests"]
+# basedpyright's own default is "recommended", which turns on rules like
+# reportAny and reportUnusedCallResult. Those are not a fit for code written
+# against Home Assistant's surface, so the baseline is pyright's standard.
+typeCheckingMode = "standard"
+# Home Assistant declares `available` and `entity_description` as cached
+# properties on Entity and expects subclasses to narrow or override them; every
+# integration that does so trips these. Suppressed rather than worked around,
+# per the convention in AGENTS.md — the code copied from core should pass
+# unchanged. Re-enabled for the vendored client below, which has no HA types in
+# it and so has no excuse.
+reportIncompatibleVariableOverride = "none"
+reportIncompatibleMethodOverride = "none"
+
+# The vendored client is standalone and fully typed, so strict costs nothing
+# there and catches the field-parsing errors that would otherwise surface as a
+# silently None sensor.
+# `typeCheckingMode` is not a valid key inside an execution environment — it is
+# accepted silently and ignored, which loses the strictness without saying so.
+# The rules are therefore named one by one. They are the no-implicit-Any family
+# that carried the weight under mypy's `strict`, and a deliberate typing hole in
+# this package must fail the build; check that with a throwaway untyped function
+# before trusting a change here.
+[[tool.basedpyright.executionEnvironments]]
+root = "custom_components/perific/api"
+reportIncompatibleVariableOverride = "error"
+reportIncompatibleMethodOverride = "error"
+reportMissingParameterType = "error"
+reportMissingTypeArgument = "error"
+reportUnknownArgumentType = "error"
+reportUnknownLambdaType = "error"
+reportUnknownParameterType = "error"
+# reportUnknownMemberType and reportUnknownVariableType stay off. This package
+# parses arbitrary JSON with `.get()` and defaults on purpose — see the
+# tolerant-parsing note in AGENTS.md and the ANN401 entry below — so the values
+# it reads genuinely are unknown until a model coerces them. Signatures still
+# have to be typed, which is what the rules above enforce.
+reportUntypedBaseClass = "error"
+reportUntypedClassDecorator = "error"
+reportUntypedFunctionDecorator = "error"
+reportUntypedNamedTuple = "error"
+reportPrivateUsage = "error"
+reportInvalidTypeVarUse = "error"
+reportRedeclaration = "error"
+reportMatchNotExhaustive = "error"
+reportUnnecessaryCast = "error"
+reportUnnecessaryComparison = "error"
+reportUnnecessaryContains = "error"
+reportUnnecessaryIsInstance = "error"
+
+# Home Assistant's result types — ConfigFlowResult, StatisticData — mark most of
+# their keys NotRequired, so reading one is an error even where the flow under
+# test is contractually required to have set it. In production that rule catches
+# a latent KeyError; in a test the KeyError *is* the assertion, and wrapping
+# every read would bury what each test is actually checking. Off here, on
+# everywhere else.
+[[tool.basedpyright.executionEnvironments]]
+root = "tests"
+# An execution environment resolves imports from its own root, so the repo root
+# has to be named here as well. It is the same path pytest's `pythonpath` adds,
+# and for the same reason: custom_components/ is a namespace package.
+extraPaths = ["."]
+reportTypedDictNotRequiredAccess = "none"

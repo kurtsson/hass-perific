@@ -44,8 +44,8 @@ jobs:
           uv run --no-sync ruff check .
           uv run --no-sync ruff format --check .
 
-      - name: Mypy
-        run: uv run --no-sync mypy
+      - name: Basedpyright
+        run: uv run --no-sync basedpyright
 
       - name: Pytest
         run: uv run --no-sync pytest -q

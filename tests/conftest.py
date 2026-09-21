@@ -213,6 +213,17 @@ def packets_t1() -> Any:
 
 
 @pytest.fixture
+def phasedata() -> Any:
+    """The captured ``PUT /getphasedata`` response.
+
+    Eleven minutes spanning an hour boundary, so the hourly reduction has two
+    hours to work with. ``hwo`` is flat across all of them, which is what the
+    real export register does overnight.
+    """
+    return load_fixture("getphasedata.json")
+
+
+@pytest.fixture
 def meters(overview: Any) -> list[Item]:
     """The meters in the capture — one of its four items."""
     return [item for item in parse_items(overview) if item.is_meter]
@@ -225,6 +236,9 @@ def mock_client(meters: list[Item], packets_t0: Any) -> AsyncMock:
     client.async_login.return_value = TOKEN_INFO
     client.async_get_meters.return_value = meters
     client.async_get_latest_packets.return_value = parse_latest_packets(packets_t0)
+    # Setting up an entry starts a history import. Without a real list here the
+    # importer would walk a Mock, so the quiet default is "nothing to read".
+    client.async_get_phase_data.return_value = []
     return client
 
 
@@ -263,5 +277,10 @@ async def setup_integration(
     config_entry.add_to_hass(hass)
     with patch("custom_components.perific.EnegicClient", return_value=mock_client):
         await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+        # Setup starts a history import as a background task, and that task waits
+        # on the recorder's executor. One drain returns before the executor's
+        # callback has been scheduled back onto the loop, so tests that count
+        # client calls or patch the logger could still race it.
         await hass.async_block_till_done()
     return config_entry

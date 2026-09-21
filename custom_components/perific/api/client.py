@@ -6,6 +6,7 @@ and are not inferrable — ``/getlatestpackets`` is a PUT despite being a read.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
@@ -17,17 +18,27 @@ from .exceptions import (
     PerificRateLimitError,
     PerificResponseError,
 )
-from .models import TokenInfo, parse_items, parse_latest_packets
+from .models import TokenInfo, parse_items, parse_latest_packets, parse_phase_data
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
 
-    from .models import Item, ItemPackets
+    from .models import Item, ItemPackets, PhasePoint
 
 BASE_URL = "https://api.enegic.com"
 DEFAULT_TIMEOUT = ClientTimeout(total=30)
 
 _BODYLESS_METHODS = ("PUT", "POST")
+
+# /getphasedata reads its window as UTC and writes naive ISO seconds.
+_API_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
+
+
+def _api_time(value: datetime) -> str:
+    """Format a datetime the way /getphasedata wants it: naive ISO, read as UTC."""
+    if value.tzinfo is not None:
+        value = value.astimezone(UTC).replace(tzinfo=None)
+    return value.strftime(_API_TIME_FORMAT)
 
 
 def _retry_after(value: str | None) -> float | None:
@@ -93,6 +104,22 @@ class EnegicClient:
     async def async_get_latest_packets(self) -> dict[int, ItemPackets]:
         """Fetch current readings, keyed by item id."""
         return parse_latest_packets(await self._request("PUT", "/getlatestpackets"))
+
+    async def async_get_phase_data(
+        self, item_id: int, start: datetime, end: datetime | None = None
+    ) -> list[PhasePoint]:
+        """Historical readings for one item, one point per minute.
+
+        ``start`` and ``end`` are sent as naive ISO strings and read by the server
+        as UTC; the timestamps that come back are in the item's own timezone.
+        ``endTime`` is optional and defaults to now. The same two fields carrying
+        epoch milliseconds answer 500, and the ``fromDate``/``toDate`` the
+        community documentation gives bind to nothing and return an empty list.
+        """
+        body: dict[str, Any] = {"itemId": item_id, "startTime": _api_time(start)}
+        if end is not None:
+            body["endTime"] = _api_time(end)
+        return parse_phase_data(await self._request("PUT", "/getphasedata", body=body))
 
     async def _request(
         self,

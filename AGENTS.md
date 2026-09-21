@@ -156,16 +156,37 @@ wrapped by hand).
 `.editorconfig` carries the indent conventions. Prettier reads `indent_size` from it, so the two
 have to agree: JSON stays at 2 spaces.
 
-**mypy** runs over the vendored client only; the scope is set in `pyproject.toml`:
+**basedpyright** type-checks the integration and the tests; the configuration is in
+`pyproject.toml`:
 
 ```
-uv run mypy
+uv run basedpyright
 ```
 
-That package is standalone and fully typed, so strict checking is cheap there and catches the
-field-parsing mistakes that would otherwise surface as a silently `None` sensor. The HA-facing
-modules are deliberately out of scope for now — strict typing against HA's own surface costs more
-than it returns at this stage.
+It replaced mypy, for one reason: mypy has no equivalent of `reportTypedDictNotRequiredAccess` or
+`reportOptionalMemberAccess`, so it was silent on the Home Assistant result types that make up most
+of this code's surface — and it only ever looked at `api/`. basedpyright is also what the editor
+runs, so an editor warning and a CI failure are now the same thing.
+
+Three scopes, because one strictness does not suit all of it:
+
+- **`custom_components/perific/api/`** is checked hardest. It is standalone and fully typed, and a
+  mistake there surfaces as a silently `None` sensor rather than an error.
+- **The HA-facing modules** run at the default. `available` and `entity_description` override
+  cached properties on `Entity`, which every integration does and which trips
+  `reportIncompatibleVariableOverride`; those two rules are off.
+- **`tests/`** additionally turns off `reportTypedDictNotRequiredAccess`. `ConfigFlowResult` and
+  `StatisticData` mark most keys `NotRequired`, and in a test the `KeyError` from a missing one *is*
+  the assertion.
+
+Two traps, both of which cost real time to find:
+
+- **`typeCheckingMode` is not valid inside an `executionEnvironment`.** It is ignored with only a
+  passing note on stderr, so `api/` looked strict while being checked at the default. The rules are
+  named individually instead. After changing them, confirm they still bite by adding a throwaway
+  untyped function to `api/` and watching it fail.
+- **An `executionEnvironment` resolves imports from its own root**, so `tests/` has to name the repo
+  root in `extraPaths` — the same path `pythonpath` gives pytest.
 
 The pre-commit hooks run all of them, plus the test suite, and they call the same `uv run` commands
 CI does so a hook can never disagree with CI about which tool it used.

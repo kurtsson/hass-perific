@@ -5,12 +5,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import timedelta
-from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import voluptuous as vol
-from homeassistant.config_entries import SOURCE_USER
+from homeassistant.config_entries import SOURCE_USER, ConfigFlowResult
 from homeassistant.const import (
     CONF_PASSWORD,
     CONF_SCAN_INTERVAL,
@@ -73,7 +72,7 @@ def _patch_login(
         yield
 
 
-async def _start_user_flow(hass: HomeAssistant) -> dict[str, Any]:
+async def _start_user_flow(hass: HomeAssistant) -> ConfigFlowResult:
     return await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_USER}
     )
@@ -179,9 +178,9 @@ class TestReauth:
     async def test_a_fresh_token_is_written_back_to_the_entry(
         self, hass: HomeAssistant, config_entry: MockConfigEntry
     ) -> None:
+        valid_to = dt_util.utcnow() + timedelta(days=365)
         renewed = TokenInfo(
-            token="99999999-8888-7777-6666-555555555555",
-            valid_to=dt_util.utcnow() + timedelta(days=365),
+            token="99999999-8888-7777-6666-555555555555", valid_to=valid_to
         )
         config_entry.add_to_hass(hass)
         result = await config_entry.start_reauth_flow(hass)
@@ -197,7 +196,7 @@ class TestReauth:
         assert result["type"] is FlowResultType.ABORT
         assert result["reason"] == "reauth_successful"
         assert config_entry.data[CONF_TOKEN] == renewed.token
-        assert config_entry.data[CONF_TOKEN_VALID_TO] == renewed.valid_to.isoformat()
+        assert config_entry.data[CONF_TOKEN_VALID_TO] == valid_to.isoformat()
         # Neither the username nor the new password is stored beyond the exchange.
         assert config_entry.data[CONF_USERNAME] == USERNAME
         assert CONF_PASSWORD not in config_entry.data

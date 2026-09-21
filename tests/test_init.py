@@ -7,7 +7,11 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
+from homeassistant.config_entries import (
+    SOURCE_REAUTH,
+    ConfigEntryState,
+    ConfigFlowResult,
+)
 from homeassistant.const import CONF_PASSWORD, CONF_TOKEN, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
@@ -45,11 +49,11 @@ async def _setup(
         await hass.async_block_till_done()
 
 
-def _reauth_flows(hass: HomeAssistant) -> list[dict]:
+def _reauth_flows(hass: HomeAssistant) -> list[ConfigFlowResult]:
     return [
         flow
         for flow in hass.config_entries.flow.async_progress_by_handler(DOMAIN)
-        if flow["context"].get("source") == SOURCE_REAUTH
+        if flow.get("context", {}).get("source") == SOURCE_REAUTH
     ]
 
 

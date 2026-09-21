@@ -94,5 +94,17 @@
         }
       }
     }
+  },
+  "services": {
+    "import_history": {
+      "name": "Import energy history",
+      "description": "Imports hourly energy statistics from the Perific cloud. Runs by itself every hour; use this to force a rebuild from a chosen point.",
+      "fields": {
+        "start": {
+          "name": "Start",
+          "description": "Import from this moment onwards, replacing what is already stored. Leave empty to continue from wherever the last import stopped."
+        }
+      }
+    }
   }
 }

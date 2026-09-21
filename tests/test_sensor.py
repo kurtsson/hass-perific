@@ -63,6 +63,18 @@ def _enable_custom_integrations(enable_custom_integrations: None) -> None:
     """Home Assistant only loads custom_components when this fixture is active."""
 
 
+def state_of(hass: HomeAssistant, entity_id: str) -> str:
+    """An entity's current state, asserting the entity exists.
+
+    ``hass.states.get`` is optional, and every caller here has just set the
+    entity up. Going through this narrows the type and turns a missing entity
+    into a named failure rather than an attribute error on ``None``.
+    """
+    state = hass.states.get(entity_id)
+    assert state is not None, entity_id
+    return state.state
+
+
 @pytest.fixture
 def entity_ids(
     hass: HomeAssistant, setup_integration: MockConfigEntry
@@ -129,9 +141,11 @@ class TestTyping:
         """Voltage is context for the other readings, not a headline measurement."""
         registry = er.async_get(hass)
         for key in VOLTAGE_KEYS:
-            entry = registry.async_get(
-                registry.async_get_entity_id("sensor", DOMAIN, f"{METER_ID}_{key}")
+            entity_id = registry.async_get_entity_id(
+                "sensor", DOMAIN, f"{METER_ID}_{key}"
             )
+            assert entity_id is not None
+            entry = registry.async_get(entity_id)
             assert entry is not None
             assert entry.entity_category is EntityCategory.DIAGNOSTIC
 
@@ -205,7 +219,7 @@ class TestValue:
         await hass.async_block_till_done()
 
         for key in KEYS:
-            assert hass.states.get(entity_ids[key]).state == STATE_UNAVAILABLE
+            assert state_of(hass, entity_ids[key]) == STATE_UNAVAILABLE
 
     @pytest.mark.parametrize(
         ("dropped", "lost", "kept"),
@@ -239,9 +253,9 @@ class TestValue:
         await hass.async_block_till_done()
 
         for key in lost:
-            assert hass.states.get(entity_ids[key]).state == STATE_UNAVAILABLE
+            assert state_of(hass, entity_ids[key]) == STATE_UNAVAILABLE
         for key in kept:
-            assert hass.states.get(entity_ids[key]).state != STATE_UNAVAILABLE
+            assert state_of(hass, entity_ids[key]) != STATE_UNAVAILABLE
 
 
 class TestIdentity:
@@ -323,7 +337,7 @@ class TestStatus:
         self, hass: HomeAssistant, entity_ids: dict[str, str]
     ) -> None:
         """The fixtures are a recording, so their timestamps are long past."""
-        assert hass.states.get(entity_ids[KEY_STATUS]).state == STATUS_STALE
+        assert state_of(hass, entity_ids[KEY_STATUS]) == STATUS_STALE
 
     async def test_a_fresh_packet_reads_as_ok(
         self,
@@ -336,8 +350,8 @@ class TestStatus:
         await setup_integration.runtime_data.async_refresh()
         await hass.async_block_till_done()
 
-        assert hass.states.get(entity_ids[KEY_STATUS]).state == STATUS_OK
-        assert hass.states.get(entity_ids[KEY_LAST_PACKET]).state != STATE_UNAVAILABLE
+        assert state_of(hass, entity_ids[KEY_STATUS]) == STATUS_OK
+        assert state_of(hass, entity_ids[KEY_LAST_PACKET]) != STATE_UNAVAILABLE
 
     async def test_a_meter_that_drops_out_reads_as_no_data(
         self,
@@ -350,7 +364,7 @@ class TestStatus:
         await setup_integration.runtime_data.async_refresh()
         await hass.async_block_till_done()
 
-        assert hass.states.get(entity_ids[KEY_STATUS]).state == STATUS_NO_DATA
+        assert state_of(hass, entity_ids[KEY_STATUS]) == STATUS_NO_DATA
 
     async def test_a_failed_poll_reads_as_offline_rather_than_unavailable(
         self,
@@ -364,8 +378,8 @@ class TestStatus:
         await setup_integration.runtime_data.async_refresh()
         await hass.async_block_till_done()
 
-        assert hass.states.get(entity_ids["power_import"]).state == STATE_UNAVAILABLE
-        assert hass.states.get(entity_ids[KEY_STATUS]).state == STATUS_OFFLINE
+        assert state_of(hass, entity_ids["power_import"]) == STATE_UNAVAILABLE
+        assert state_of(hass, entity_ids[KEY_STATUS]) == STATUS_OFFLINE
 
 
 class TestMonotonicityGuard:
@@ -388,7 +402,7 @@ class TestMonotonicityGuard:
         await hass.async_block_till_done()
 
     def _state(self, hass: HomeAssistant, entity_ids: dict[str, str]) -> str:
-        return hass.states.get(entity_ids["energy_import"]).state
+        return state_of(hass, entity_ids["energy_import"])
 
     async def test_a_flat_register_passes_straight_through(
         self,
@@ -469,7 +483,7 @@ class TestMonotonicityGuard:
         as a meter reset, which is exactly what the guard exists to stop.
         """
         entity_id = entity_ids["energy_import"]
-        assert float(hass.states.get(entity_id).state) == 248718.155
+        assert float(state_of(hass, entity_id)) == 248718.155
 
         assert await hass.config_entries.async_unload(setup_integration.entry_id)
         await hass.async_block_till_done()
@@ -479,7 +493,7 @@ class TestMonotonicityGuard:
             await hass.config_entries.async_setup(setup_integration.entry_id)
             await hass.async_block_till_done()
 
-        assert float(hass.states.get(entity_id).state) == 248718.155
+        assert float(state_of(hass, entity_id)) == 248718.155
 
     async def test_power_is_not_guarded(
         self,
@@ -507,5 +521,4 @@ class TestMonotonicityGuard:
         await setup_integration.runtime_data.async_refresh()
         await hass.async_block_till_done()
 
-        state = hass.states.get(entity_ids["power_import"])
-        assert float(state.state) < 4054.5
+        assert float(state_of(hass, entity_ids["power_import"])) < 4054.5

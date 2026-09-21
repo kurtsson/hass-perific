@@ -197,6 +197,58 @@ class PhaseData:
 
 
 @dataclass(frozen=True, slots=True)
+class PhasePoint:
+    """One minute of history for an item.
+
+    ``timestamp`` is naive and in the *item's own* timezone, not UTC — see
+    ``docs/api/enegic.md``. Converting it is the caller's job, because doing it
+    here would need the item, which this module does not have.
+    """
+
+    timestamp: datetime
+    data: PhaseData
+
+
+def parse_phase_data(payload: Any) -> list[PhasePoint]:
+    """Flatten a ``/getphasedata`` response into points, oldest first.
+
+    Points arrive nested under a group whose ``dt`` has been the same constant
+    for every window probed, so the grouping is flattened rather than read.
+    """
+    if not isinstance(payload, list):
+        return []
+
+    points: list[PhasePoint] = []
+    for group in payload:
+        if not isinstance(group, dict):
+            continue
+        for entry in group.get("data") or []:
+            if not isinstance(entry, dict):
+                continue
+            timestamp = _iso_naive(entry.get("ts"))
+            if timestamp is None:
+                continue
+            points.append(
+                PhasePoint(
+                    timestamp=timestamp, data=PhaseData.from_api(entry.get("data"))
+                )
+            )
+    points.sort(key=lambda point: point.timestamp)
+    return points
+
+
+def _iso_naive(value: Any) -> datetime | None:
+    """Parse the endpoint's naive ISO timestamps, rejecting anything else."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is None else None
+
+
+@dataclass(frozen=True, slots=True)
 class Packet:
     """One bucket's reading for one item."""
 
@@ -249,9 +301,8 @@ class ItemPackets:
         item_id = _whole(payload.get("ItemId"))
         if item_id is None:
             raise PerificResponseError("Packet entry carried no ItemId")
-        buckets = payload.get("LatestPackets")
-        if not isinstance(buckets, dict):
-            buckets = {}
+        raw = payload.get("LatestPackets")
+        buckets: dict[str, Any] = raw if isinstance(raw, dict) else {}
         return cls(
             item_id=item_id,
             packets={
@@ -263,9 +314,10 @@ class ItemPackets:
 
 def parse_items(payload: Any) -> list[Item]:
     """Build the item list from a ``/getaccountoverview`` response body."""
-    entries = payload.get("Items") if isinstance(payload, dict) else None
-    if not isinstance(entries, list):
+    raw = payload.get("Items") if isinstance(payload, dict) else None
+    if not isinstance(raw, list):
         raise PerificResponseError("Account overview carried no Items list")
+    entries: list[Any] = raw
     return _parse_each(entries, Item.from_api, "item")
 
 
@@ -276,7 +328,8 @@ def parse_latest_packets(payload: Any) -> dict[int, ItemPackets]:
     """
     if not isinstance(payload, list):
         raise PerificResponseError("Latest packets was not a list")
+    entries: list[Any] = payload
     return {
         entry.item_id: entry
-        for entry in _parse_each(payload, ItemPackets.from_api, "packet")
+        for entry in _parse_each(entries, ItemPackets.from_api, "packet")
     }

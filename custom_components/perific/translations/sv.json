@@ -94,5 +94,17 @@
         }
       }
     }
+  },
+  "services": {
+    "import_history": {
+      "name": "Importera energihistorik",
+      "description": "Importerar timvis energistatistik från Perifics moln. Körs av sig själv varje timme; använd den här för att tvinga fram en ombyggnad från en vald tidpunkt.",
+      "fields": {
+        "start": {
+          "name": "Start",
+          "description": "Importera från den här tidpunkten och framåt, och ersätt det som redan är lagrat. Lämna tomt för att fortsätta där den senaste importen slutade."
+        }
+      }
+    }
   }
 }

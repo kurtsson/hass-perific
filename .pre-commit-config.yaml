@@ -1,7 +1,7 @@
 # Install once per clone with: uv run pre-commit install
 #
 # Every hook runs the repo's own pinned tools through uv, so a hook can never
-# disagree with CI about which ruff or mypy it is.
+# disagree with CI about which ruff or basedpyright it is.
 minimum_pre_commit_version: "4.0.0"
 default_install_hook_types:
   - pre-commit
@@ -30,12 +30,12 @@ repos:
         types_or: [python, pyi]
         require_serial: true
 
-      - id: mypy
-        name: mypy
-        entry: uv run --no-sync mypy
+      - id: basedpyright
+        name: basedpyright
+        entry: uv run --no-sync basedpyright
         language: system
         pass_filenames: false
-        files: ^custom_components/perific/api/
+        types_or: [python, pyi, toml]
 
       - id: pytest
         name: pytest

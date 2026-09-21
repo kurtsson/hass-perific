@@ -5,7 +5,7 @@ Home Assistant integration for the **Perific One** energy monitor.
 Reads grid import and export from your electricity meter's HAN port via the Enegic cloud API, and
 feeds them to the Energy dashboard and long-term statistics.
 
-> **Early days.** Version 0.3.1, running against one household's meter. The sensors and their typing
+> **Early days.** Version 0.4.0, running against one household's meter. The sensors and their typing
 > are verified, but the API is undocumented and this has been exercised on a single device — expect
 > rough edges, and please open an issue if you hit one.
 
@@ -38,6 +38,11 @@ export energy, live import and export power, per-phase current and voltage, and 
 They feed the Energy dashboard, long-term statistics, history and automations like anything else in
 Home Assistant.
 
+Energy is handled differently from the rest. Rather than accumulating it from whatever Home
+Assistant happened to be awake for, the integration imports the hourly series from Enegic's own
+record — back to the day the device was registered, and topped up every hour. An outage leaves no
+hole and no catch-up spike. See [Energy history](#energy-history).
+
 What it can't do:
 
 - **No solar production.** The HAN port only sees the grid connection point, so you get net import
@@ -56,8 +61,8 @@ Perific or Enegic, and it relies on an undocumented API that they are free to ch
 
 | Sensor | Unit | Status | Notes |
 |---|---|---|---|
-| Energy imported | kWh | ✅ | Cumulative. Use as *grid consumption* in the Energy dashboard. |
-| Energy exported | kWh | ✅ | Cumulative. Use as *return to grid*. |
+| Energy imported | kWh | ✅ | Cumulative meter register. For the Energy dashboard prefer the imported history, not this. |
+| Energy exported | kWh | ✅ | Cumulative meter register. As above. |
 | Power imported | W | ✅ | Live. Use as *grid consumption* under the dashboard's two-sensor power mode. |
 | Power exported | W | ✅ | Live. The matching *return to grid* sensor. |
 | Current L1–L3 | A | ✅ | Signed: negative means that phase is exporting. |
@@ -140,25 +145,79 @@ in, because it is what explains an unexpected reauthentication prompt.
 Under **Settings → Dashboards → Energy**, open the grid connection to get *Configure grid
 connection*, and fill it in like this:
 
-| Field in the dialog | Sensor to pick |
-|---|---|
-| Energy imported from grid | **Energy imported** |
-| Energy exported to grid | **Energy exported** |
-| Type of power measurement | **Two sensors** |
-| → Power imported from grid | **Power imported** |
-| → Power exported to grid | **Power exported** |
+| Field in the dialog | What to pick | Where it comes from |
+|---|---|---|
+| Energy imported from grid | **Imported electricity** | the imported history |
+| Energy exported to grid | **Exported electricity** | the imported history |
+| Type of power measurement | **Two sensors** | |
+| → Power imported from grid | **Power imported** | the live sensor |
+| → Power exported to grid | **Power exported** | the live sensor |
 
-The power half is optional — leave it on *No power sensor* and the dashboard still works, just
-without the live view. Choosing **Two sensors** is what suits this integration: the meter accounts
-per phase, so import and export can both be non-zero at the same instant, and the other modes assume
-a single sensor that is positive one way and negative the other. Home Assistant creates its own
-helper sensor from the pair and says so in the dialog.
+**The two energy fields offer two lookalikes, and the difference matters.** Picking the wrong one
+is the single most likely mistake in this whole setup, so:
 
-Entity names follow your Home Assistant language, so on a Swedish instance these appear as *Inköpt
-elektricitet*, *Såld elektricitet*, *Inköpt effekt* and *Såld effekt*.
+- The one to use has a **chart icon** and says **Perific** underneath. That is the imported
+  history — every hour the meter ever recorded, with no holes from Home Assistant restarts.
+- The other has a **grid icon** and says your meter's name underneath. That is the live sensor
+  entity, and it only holds the hours Home Assistant was awake for.
+
+Both are named the same thing on purpose, so that the picker reads consistently in your own
+language. Go by the icon.
+
+The power half is a different matter: **pick the ordinary sensors there.** Power is a live reading
+that nothing can reconstruct after the fact, so there is no history version of it and the picker
+will not offer one. Leave it on *No power sensor* and the dashboard still works, just without the
+live view. **Two sensors** is the mode that suits this integration: the meter accounts per phase, so
+import and export can both be non-zero at the same instant, and the other modes assume a single
+sensor that is positive one way and negative the other. Home Assistant builds its own helper sensor
+from the pair and says so in the dialog.
 
 Cost tracking is independent of this integration — point it at whatever price entity you already
 have, such as a Nord Pool sensor.
+
+### Energy history
+
+The hourly energy figures do not come from polling. Home Assistant only records statistics for the
+hours it was running, so a restart, an outage or a rejected token leaves a hole — and because the
+meter's registers are cumulative, the missing energy is not lost but dumped into whichever hour
+collection resumed, as one implausible spike.
+
+Instead, this integration reads the history Enegic already keeps, at one point per minute, and
+writes it straight into long-term statistics:
+
+- **On first setup** it imports everything back to the day your device was registered, which is
+  usually well before you installed Home Assistant. Expect the Energy dashboard to have history the
+  moment you finish configuring it.
+- **Every hour after that**, a few minutes past, it imports whatever is new. Importing is a
+  replace rather than an add, so a run that overlaps what it already wrote changes nothing.
+- **An outage repairs itself.** The next successful run simply covers a wider span. There is
+  nothing to detect and nothing to trigger.
+
+Hours the vendor has no data for stay empty rather than being interpolated. Nothing here invents a
+reading the meter never reported.
+
+Two consequences worth knowing:
+
+- These series have **no entity**. They appear in the Energy dashboard and under **Developer Tools →
+  Statistics**, and nowhere else — not in History, and not as something you can put on a card or
+  use in an automation. The live sensors are still there for that.
+- The **Energy imported** and **Energy exported** *sensors* still exist and still keep their own
+  statistics, which is the gappy version described above. They are left alone deliberately, so you
+  can compare the two before committing. Once you trust the history, just leave the dashboard
+  pointed at it.
+
+To force a rebuild — after a long outage, or if you want to re-read a period — call
+**`perific.import_history`**. With no arguments it continues from wherever the last import stopped;
+give it a `start` and it re-reads from there, replacing what is stored:
+
+```yaml
+action: perific.import_history
+data:
+  start: "2026-08-29T17:00:00+02:00"
+```
+
+How far back Enegic retains is not yet known — this device has not been in service long enough for
+a limit to show. It has no bearing on ordinary operation, which only ever reads forward.
 
 ## Development
 
@@ -172,7 +231,7 @@ uv run pre-commit install                  # lint, types and tests before every 
 
 uv run pytest
 uv run ruff check . && uv run ruff format --check .
-uv run mypy
+uv run basedpyright                        # types; also what the editor runs
 npx prettier --check .                     # JSON — ruff doesn't cover it
 ```
 

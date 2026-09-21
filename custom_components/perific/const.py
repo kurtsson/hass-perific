@@ -28,6 +28,43 @@ STALE_AFTER: Final = timedelta(minutes=5)
 # being rejected intermittently must not end collection on its first bad answer.
 AUTH_FAILURES_BEFORE_REAUTH: Final = 3
 
+# The two cumulative registers imported as external statistics, as
+# {statistic key: PhaseData field}. Both names match; the mapping is explicit so
+# a rename of either side cannot silently pair them wrongly.
+HISTORY_REGISTERS: Final = {
+    "energy_import": "energy_import",
+    "energy_export": "energy_export",
+}
+
+# Shown in the statistics picker and the Energy dashboard, where there is no
+# entity to take a translated name from.
+HISTORY_NAMES: Final = {
+    "energy_import": "Imported electricity",
+    "energy_export": "Exported electricity",
+}
+
+# One request covers at most this much, so a long catch-up arrives as a series
+# of ordinary responses rather than one very large one. The cap only bites while
+# catching up: a steady-state run finds a single hour outstanding and stops after
+# the first chunk.
+HISTORY_CHUNK: Final = timedelta(days=1)
+HISTORY_MAX_CHUNKS: Final = 40
+
+# Windows shorter than this are not asked for. Points are a minute apart so one
+# could hold nothing, and the API answers 400 to a window whose start and end
+# are the same once both are truncated to whole seconds.
+HISTORY_MIN_WINDOW: Final = timedelta(minutes=1)
+
+# Statistics are hourly, so importing more often than that only rewrites the
+# current unfinished hour. Run a few minutes past the hour, by which time the
+# hour that just ended is complete and the vendor has it. Phase matters: an
+# interval timer would drift to whatever minute setup happened at, leaving a
+# finished hour unwritten for up to an hour.
+HISTORY_RUN_AT_MINUTE: Final = 5
+
+SERVICE_IMPORT_HISTORY: Final = "import_history"
+ATTR_START: Final = "start"
+
 KEY_STATUS: Final = "status"
 KEY_LAST_PACKET: Final = "last_packet"
 

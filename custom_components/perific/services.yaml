@@ -1,0 +1,7 @@
+import_history:
+  fields:
+    start:
+      required: false
+      example: "2026-08-29T17:00:00+00:00"
+      selector:
+        datetime:

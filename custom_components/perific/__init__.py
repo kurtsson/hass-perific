@@ -5,25 +5,63 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+import voluptuous as vol
 from homeassistant.const import CONF_PASSWORD, CONF_TOKEN, CONF_USERNAME, Platform
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.util import dt as dt_util
 
 from .api import EnegicClient, PerificAuthError, PerificError
 from .config_flow import PerificConfigFlow, token_entry_data
-from .const import CONF_TOKEN_VALID_TO
+from .const import (
+    ATTR_START,
+    CONF_TOKEN_VALID_TO,
+    DOMAIN,
+    HISTORY_RUN_AT_MINUTE,
+    SERVICE_IMPORT_HISTORY,
+)
 from .coordinator import PerificCoordinator
+from .history import HistoryImporter
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import HomeAssistant
+    from homeassistant.core import HomeAssistant, ServiceCall
+    from homeassistant.helpers.typing import ConfigType
 
     from .coordinator import PerificConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
+
+IMPORT_HISTORY_SCHEMA = vol.Schema({vol.Optional(ATTR_START): cv.datetime})
+
+
+async def async_setup(hass: HomeAssistant, _config: ConfigType) -> bool:
+    """Register the integration-wide service.
+
+    Registered here rather than per entry: the service spans every entry, and
+    re-registering it on each reload would rebind the handler.
+    """
+
+    async def async_handle_import(call: ServiceCall) -> None:
+        start = call.data.get(ATTR_START)
+        if start is not None:
+            start = dt_util.as_utc(start)
+        for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+            await HistoryImporter(hass, entry).async_import_since(start)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_IMPORT_HISTORY,
+        async_handle_import,
+        schema=IMPORT_HISTORY_SCHEMA,
+    )
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: PerificConfigEntry) -> bool:
@@ -35,6 +73,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: PerificConfigEntry) -> b
     entry.runtime_data = coordinator
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    importer = HistoryImporter(hass, entry)
+
+    async def async_scheduled_import(now: datetime) -> None:
+        # The listener signature returns None; async_run's count is for the
+        # service and the tests.
+        await importer.async_run(now)
+
+    entry.async_on_unload(
+        async_track_time_change(
+            hass, async_scheduled_import, minute=HISTORY_RUN_AT_MINUTE, second=0
+        )
+    )
+    # Once at startup as well, so an instance that was down for hours catches up
+    # immediately rather than at the next hour mark. A first import walks the
+    # whole account, so it must not hold up setup.
+    entry.async_create_background_task(
+        hass, importer.async_run(), name=f"{DOMAIN} history import"
+    )
     return True
 
 
