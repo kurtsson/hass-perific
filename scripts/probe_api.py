@@ -11,9 +11,16 @@ Answers the four open questions in docs/api/enegic.md:
 Question 4 is the one the sensor design is blocked on, so the same
 `/getlatestpackets` call is made twice with a wait in between.
 
+`--phasedata` asks a different set, the ones the statistics backfill in
+docs/plans/2026-09-18-statistics-backfill.md is blocked on: does
+`POST /getphasedata` exist, what request shape does it accept, what bucket
+granularity does it return, does it carry the cumulative registers, and how far
+back does the account retain.
+
 Standard library only -- no virtualenv, no install:
 
     python3 scripts/probe_api.py
+    python3 scripts/probe_api.py --phasedata
 
 Credentials come from `.env` in the repository root (PERIFIC_USERNAME,
 PERIFIC_PASSWORD). They are read by this script and never printed.
@@ -23,6 +30,9 @@ Writes to scripts/probe_out/ (gitignored):
     raw/         verbatim responses -- contains a real token and MAC address
     redacted/    the same responses with secrets and identifiers replaced
     summary.txt  the findings, safe to paste anywhere
+
+`--phasedata` writes the same three into scripts/probe_out/phasedata/ instead,
+so it cannot overwrite the summary of the run that produced the fixtures.
 
 Exits non-zero if any call fails.
 """
@@ -36,8 +46,11 @@ import ssl
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -83,28 +96,54 @@ def load_env(path: Path) -> dict[str, str]:
 # --------------------------------------------------------------------------
 
 
-def request(
+@dataclass(frozen=True)
+class Response:
+    """One call's outcome, including the failures worth telling apart."""
+
+    status: int | None
+    payload: Any
+    detail: str | None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == 200 and self.detail is None
+
+
+def send(
     method: str,
     path: str,
     *,
     token: str | None = None,
     body: dict[str, Any] | None = None,
-) -> Any:
-    """Call the API and return the decoded JSON body."""
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
+    form: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+) -> Response:
+    """Call the API without raising, so a probe can read the status code.
+
+    `form` sends `application/x-www-form-urlencoded` instead of JSON, which is
+    what `toshi38`'s documentation claims `/getphasedata` wants. `params` puts
+    them in the query string instead, for the verbs that carry no body.
+    """
+    headers = {"Accept": "application/json"}
     if token:
         headers["X-Authorization"] = token
 
-    # aiohttp sends Content-Length: 0 for a bodyless PUT; b"" matches that.
-    # A bare None makes urllib omit the header entirely, which some
-    # frameworks reject on PUT.
-    data = json.dumps(body).encode() if body is not None else b""
+    if form is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        data = urllib.parse.urlencode(form).encode()
+    else:
+        headers["Content-Type"] = "application/json"
+        # aiohttp sends Content-Length: 0 for a bodyless PUT; b"" matches that.
+        # A bare None makes urllib omit the header entirely, which some
+        # frameworks reject on PUT.
+        data = json.dumps(body).encode() if body is not None else b""
+
+    url = f"{BASE_URL}{path}"
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
 
     req = urllib.request.Request(
-        f"{BASE_URL}{path}",
+        url,
         data=data if method in {"PUT", "POST"} else None,
         headers=headers,
         method=method,
@@ -114,19 +153,32 @@ def request(
         with urllib.request.urlopen(
             req, timeout=TIMEOUT, context=ssl.create_default_context()
         ) as response:
-            payload = response.read().decode("utf-8")
+            status, payload = response.status, response.read().decode("utf-8")
     except urllib.error.HTTPError as err:
-        detail = err.read().decode("utf-8", "replace")[:500]
-        raise ProbeError(f"{method} {path} -> HTTP {err.code}: {detail}") from err
+        return Response(err.code, None, err.read().decode("utf-8", "replace")[:500])
     except urllib.error.URLError as err:
-        raise ProbeError(f"{method} {path} -> unreachable: {err.reason}") from err
+        return Response(None, None, f"unreachable: {err.reason}")
 
     try:
-        return json.loads(payload)
-    except json.JSONDecodeError as err:
+        return Response(status, json.loads(payload), None)
+    except json.JSONDecodeError:
+        return Response(status, None, f"response is not JSON: {payload[:200]}")
+
+
+def request(
+    method: str,
+    path: str,
+    *,
+    token: str | None = None,
+    body: dict[str, Any] | None = None,
+) -> Any:
+    """Call the API and return the decoded JSON body."""
+    response = send(method, path, token=token, body=body)
+    if not response.ok:
         raise ProbeError(
-            f"{method} {path} -> response is not JSON: {payload[:200]}"
-        ) from err
+            f"{method} {path} -> HTTP {response.status}: {response.detail}"
+        )
+    return response.payload
 
 
 # --------------------------------------------------------------------------
@@ -474,6 +526,294 @@ def compare_samples(report: Report, first: Any, second: Any, elapsed: float) -> 
 
 
 # --------------------------------------------------------------------------
+# /getphasedata -- what the statistics backfill would depend on
+# --------------------------------------------------------------------------
+#
+# Answers the open questions in docs/plans/2026-09-18-statistics-backfill.md:
+# does the endpoint exist, what does its request body look like, what bucket
+# granularity does it return, does it carry the cumulative registers or
+# per-period sums, and how far back does the free tier retain.
+#
+# The accepted shape below was found by trial against the real account, and
+# every part of it contradicts toshi38's PERIFIC_API_DOCUMENTATION.md. The
+# near misses are kept in the probe because each one fails differently, and
+# the difference is the evidence that the accepted shape is the right one.
+
+METER_CATEGORY = "LocalPhysical"
+METER_TYPE = "Phase"
+
+ISO_SECONDS = "%Y-%m-%dT%H:%M:%S"
+
+PHASEDATA = "/getphasedata"
+
+# Days back to start a one-day window, to find the retention edge. Clustered
+# around a fortnight, which is where the edge sits on a free account.
+RETENTION_PROBES = (1, 7, 10, 12, 14, 16, 21, 30, 90, 365)
+
+type Window = tuple[datetime, datetime]
+
+
+def find_meter(overview: Any) -> dict[str, Any] | None:
+    """Pick the one item on the account that reports phases."""
+    for item in (overview or {}).get("Items") or []:
+        if (
+            item.get("ItemCategory") == METER_CATEGORY
+            and item.get("ItemType") == METER_TYPE
+        ):
+            return item
+    return None
+
+
+def phasedata_body(item_id: Any, window: Window) -> dict[str, Any]:
+    """Build the request body `/getphasedata` actually accepts.
+
+    `startTime` / `endTime` must be ISO strings interpreted as UTC. The same
+    two keys carrying epoch milliseconds answer 500, which is how they were
+    told apart from a dozen plausible namings that all answered 200 with `[]`.
+    """
+    start, end = window
+    return {
+        "itemId": item_id,
+        "startTime": start.strftime(ISO_SECONDS),
+        "endTime": end.strftime(ISO_SECONDS),
+    }
+
+
+def candidate_requests(
+    item_id: Any, window: Window
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """List the accepted shape first, then the near misses that pin it down."""
+    start, end = window
+    accepted = phasedata_body(item_id, window)
+    documented = {
+        "itemId": item_id,
+        "fromDate": start.strftime(ISO_SECONDS),
+        "toDate": end.strftime(ISO_SECONDS),
+        "dataType": "Avg",
+    }
+    epoch = {
+        **accepted,
+        "startTime": int(start.timestamp() * 1000),
+        "endTime": int(end.timestamp() * 1000),
+    }
+    return [
+        ("PUT, startTime/endTime ISO", "PUT", {"body": accepted}),
+        ("PUT, startTime/endTime epoch", "PUT", {"body": epoch}),
+        ("PUT, fromDate/toDate (documented)", "PUT", {"body": documented}),
+        (
+            "PUT, startTime only",
+            "PUT",
+            {"body": {k: accepted[k] for k in ("itemId", "startTime")}},
+        ),
+        ("PUT, no body", "PUT", {}),
+        ("POST, startTime/endTime ISO", "POST", {"body": accepted}),
+        ("GET, startTime/endTime ISO", "GET", {"params": accepted}),
+    ]
+
+
+def outline(value: Any, indent: str = "", label: str = "", depth: int = 0) -> list[str]:
+    """Describe a JSON shape nobody has seen before, in a few lines."""
+    head = f"{indent}{label + ': ' if label else ''}"
+    if depth >= 4:
+        return [f"{head}..."]
+    if isinstance(value, dict):
+        keys = sorted(value)
+        shown = keys[:12]
+        lines = [f"{head}object {shown}{' ...' if len(keys) > 12 else ''}"]
+        for key in shown[:3]:
+            lines += outline(value[key], indent + "  ", key, depth + 1)
+        return lines
+    if isinstance(value, list):
+        lines = [f"{head}array of {len(value)}"]
+        if value:
+            lines += outline(value[0], indent + "  ", "[0]", depth + 1)
+        return lines
+    return [f"{head}{value!r}"]
+
+
+def collect_points(payload: Any) -> list[dict[str, Any]]:
+    """Every `{ts, data}` object anywhere in a response.
+
+    Written to walk rather than to index, because the nesting is one of the
+    things being discovered.
+    """
+    found: list[dict[str, Any]] = []
+    stack = [payload]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            if "ts" in current and isinstance(current.get("data"), dict):
+                found.append(current)
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+    return found
+
+
+def point_time(value: Any) -> datetime | None:
+    """Parse a point's `ts`, which may be epoch ms or an ISO string."""
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value / 1000, UTC)
+    if isinstance(value, str):
+        return parse_api_time(value)
+    return None
+
+
+def report_series(report: Report, payload: Any) -> None:
+    """Report the granularity and field coverage of whatever came back."""
+    points = collect_points(payload)
+    report(f"    Points          : {len(points)}")
+    if not points:
+        report("    No {ts, data} objects found. Shape summary:")
+        for line in outline(payload, "      "):
+            report(line)
+        return
+
+    stamps = sorted(t for t in (point_time(p.get("ts")) for p in points) if t)
+    if len(stamps) >= 2:
+        spacings = sorted((b - a).total_seconds() for a, b in pairwise(stamps))
+        median = spacings[len(spacings) // 2]
+        report(
+            f"    First / last    : {stamps[0].isoformat()} .. {stamps[-1].isoformat()}"
+        )
+        report(f"    Median spacing  : {median:.0f}s ({median / 60:.1f} min)")
+        report(f"    Spacing range   : {spacings[0]:.0f}s .. {spacings[-1]:.0f}s")
+
+    keys: set[str] = set()
+    for point in points:
+        keys |= set(point.get("data") or {})
+    report(f"    data keys       : {sorted(keys)}")
+
+    # The question the backfill turns on: async_import_statistics wants a `sum`
+    # and a `state`, and which of those the endpoint can supply depends on
+    # whether it returns the cumulative registers or only the averages.
+    registers = sorted(set(ENERGY_KEYS) & keys)
+    if registers:
+        report(
+            f"    Cumulative      : {registers} present -- maps onto `state` directly"
+        )
+        sample = next(
+            (p for p in points if any(k in (p.get("data") or {}) for k in registers)),
+            None,
+        )
+        if sample:
+            values = {k: (sample.get("data") or {}).get(k) for k in registers}
+            report(f"    Sample          : {values}")
+    else:
+        report(
+            f"    Cumulative      : NEITHER {list(ENERGY_KEYS)} present -- "
+            "energy would have to be derived"
+        )
+
+
+def probe_phasedata_shape(
+    report: Report, token: str, item_id: Any, window: Window
+) -> bool:
+    """Confirm which verb and body the server accepts, and how the rest fail."""
+    report.section("5. /getphasedata -- verb and request shape")
+    report(f"Item queried       : {item_id}")
+    report(f"Window             : {window[0].isoformat()} .. {window[1].isoformat()}")
+    report()
+
+    accepted = False
+    for label, method, kwargs in candidate_requests(item_id, window):
+        response = send(method, PHASEDATA, token=token, **kwargs)
+        if not response.ok:
+            detail = (response.detail or "").replace("\n", " ")[:70]
+            report(f"  {label:<36} HTTP {response.status}  {detail}")
+            continue
+        points = len(collect_points(response.payload))
+        report(f"  {label:<36} HTTP 200  {points} point(s)")
+        if points and label.startswith("PUT, startTime"):
+            accepted = True
+
+    report()
+    if accepted:
+        report("Accepted: PUT with itemId and startTime, as ISO read in UTC.")
+        report("endTime is optional and defaults to now. Note every other line")
+        report("above: POST is 405, the documented fromDate/toDate bind to nothing")
+        report("and return an empty array, and the same two keys carrying epoch")
+        report("milliseconds answer 500.")
+    else:
+        report("The shape that worked before does not work now. Something changed")
+        report("server-side; re-derive it before trusting anything downstream.")
+    return accepted
+
+
+def probe_phasedata_series(
+    report: Report, token: str, item_id: Any, window: Window
+) -> list[tuple[str, Any]]:
+    """Report the granularity and fields of one window."""
+    report.section("6. /getphasedata -- granularity and fields")
+    response = send("PUT", PHASEDATA, token=token, body=phasedata_body(item_id, window))
+
+    groups = response.payload if isinstance(response.payload, list) else []
+    report(f"    Top level       : array of {len(groups)}")
+    for group in groups[:3]:
+        inner = group.get("data") if isinstance(group, dict) else None
+        report(
+            f"      dt={group.get('dt')!r} "
+            f"holding {len(inner) if isinstance(inner, list) else '?'} point(s)"
+        )
+    report_series(report, response.payload)
+
+    return [("05-getphasedata-recent", response.payload)]
+
+
+def probe_phasedata_retention(
+    report: Report, token: str, item_id: Any, now: datetime
+) -> list[tuple[str, Any]]:
+    """Find how far back the account still answers for."""
+    report.section("7. /getphasedata -- retention")
+    report("A one-day window ending N days ago. The free tier's retention limit is")
+    report("the reason this project exists, so this bounds the backfill window.")
+    report()
+
+    captures: list[tuple[str, Any]] = []
+    for days in RETENTION_PROBES:
+        end = now - timedelta(days=days)
+        window = (end - timedelta(days=1), end)
+        response = send(
+            "PUT", PHASEDATA, token=token, body=phasedata_body(item_id, window)
+        )
+        if not response.ok:
+            report(f"  {days:>4}d ago : HTTP {response.status}")
+            continue
+        points = len(collect_points(response.payload))
+        report(
+            f"  {days:>4}d ago : {points} point(s){'  <- empty' if not points else ''}"
+        )
+        if points:
+            # Overwritten each time round, so what survives is the oldest window
+            # that still answered -- the backfill horizon itself.
+            captures = [("06-getphasedata-oldest", response.payload)]
+
+    report()
+    report("The oldest window that still returns points is the backfill horizon.")
+    return captures
+
+
+def probe_phasedata(report: Report, token: str, overview: Any) -> list[tuple[str, Any]]:
+    """Find out whether /getphasedata is real, and what it returns."""
+    meter = find_meter(overview)
+    if meter is None:
+        raise ProbeError(
+            f"no {METER_CATEGORY}/{METER_TYPE} item on the account to query"
+        )
+    item_id = meter.get("ItemId")
+
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    window = (now - timedelta(hours=6), now)
+
+    if not probe_phasedata_shape(report, token, item_id, window):
+        return []
+
+    return probe_phasedata_series(
+        report, token, item_id, window
+    ) + probe_phasedata_retention(report, token, item_id, now)
+
+
+# --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
 
@@ -529,6 +869,11 @@ def main() -> int:
         help="rebuild redacted/ from the saved raw/ captures; makes no API calls",
     )
     parser.add_argument(
+        "--phasedata",
+        action="store_true",
+        help="probe /getphasedata instead; answers the backfill plan's questions",
+    )
+    parser.add_argument(
         "--wait",
         type=int,
         default=60,
@@ -543,6 +888,11 @@ def main() -> int:
         help=f"output directory (default: {DEFAULT_OUT.relative_to(REPO_ROOT)})",
     )
     args = parser.parse_args()
+
+    # Kept apart so a phasedata run does not overwrite the summary of the probe
+    # that produced the fixtures.
+    if args.phasedata and args.out == DEFAULT_OUT:
+        args.out = DEFAULT_OUT / "phasedata"
 
     if args.redact_only:
         return redact_only(args.out)
@@ -568,7 +918,12 @@ def main() -> int:
         secrets.append(token)
         captures.append(("01-createtoken", token_response))
 
-        captures.append(("02-getaccountoverview", probe_overview(report, token)))
+        overview = probe_overview(report, token)
+        captures.append(("02-getaccountoverview", overview))
+
+        if args.phasedata:
+            captures += probe_phasedata(report, token, overview)
+            return 0
 
         first = probe_packets(report, token, "sample 1")
         captures.append(("03-getlatestpackets-t0", first))

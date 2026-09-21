@@ -1,6 +1,13 @@
 # Backfilling statistics after a polling gap
 
-Follow-up work, not started. Written 2026-09-18 while the evidence was fresh.
+Written 2026-09-18 while the evidence was fresh. **Both gates were cleared on 2026-09-21** — see
+"Gates" below.
+
+**Superseded as an approach, not as evidence.** Repairing gaps treats a symptom: the hole exists
+only because the energy series is derived from polling continuity. Reading the vendor's own record
+instead means it cannot arise. `docs/plans/2026-09-21-energy-history-import.md` is the plan that
+gets built; everything below about the outages, the endpoint and the arithmetic still holds and is
+what that plan argues from.
 
 ## The problem
 
@@ -33,15 +40,42 @@ A gap shorter than an hour therefore costs nothing at all — the delta lands in
 to anyway. **Only gaps spanning hour boundaries are worth repairing.** Measure real gap lengths
 before building this; if the auth fix keeps them under an hour, this work has no value.
 
+## Gates
+
+Both were open when this was written. Both are now closed, and both closed in favour of building.
+
+**Are the gaps long enough to matter? Yes.** `scripts/measure_gaps.py` reads the hourly rows off the
+real instance and reports the runs with no row. Over the five days the integration had then been
+running, two gaps spanned hour boundaries:
+
+| Gap | Lost | Resumption hour |
+|---|---|---|
+| 2026-09-17 18:00 → 2026-09-18 02:00 CEST | 9 h | 26.993 kWh in one hour, 43× the median |
+| 2026-09-18 07:00 CEST | 1 h | 2.163 kWh, 3× the median |
+
+Both line up with the 401s recorded above. Ten hours lost in five days, and a single hour holding
+27 kWh, is comfortably past "not worth repairing".
+
+**Does `/getphasedata` exist? Yes, and it is better than hoped.** `scripts/probe_api.py --phasedata`
+established the call and `docs/api/enegic.md` now documents it. It is a **PUT**, not the documented
+POST; it takes `itemId` and `startTime` (`endTime` optional); it returns **one point per minute**
+rather than hourly buckets; and each point carries **`hwi` and `hwo`**, the same cumulative
+registers the live packets do. Nothing has to be synthesised.
+
+Two things found along the way that the implementation has to respect:
+
+- **Timestamps are asymmetric.** `startTime` is read as UTC; the returned `ts` is in the item's own
+  timezone. Getting this wrong books energy two hours from where it belongs, silently.
+- **A wrong parameter name returns `200 []`, not an error.** Nancy ignores unknown fields. Any code
+  calling this must treat an empty series as suspect rather than as "nothing happened then".
+
 ## Candidate mechanism
 
-Two halves, one verified and one not.
+Two halves, both now verified.
 
-**Reading history — unverified.** `docs/api/enegic.md` lists `POST /getphasedata` as "Historical,
-date-ranged time series", which came from community sources and has never been called by this
-project. Everything depends on it: whether it exists, whether it takes a date range, what bucket
-granularity it returns, whether it needs anything beyond the normal token. Verify with
-`scripts/probe_api.py` against a real account before designing anything on top of it.
+**Reading history — verified.** `PUT /getphasedata`, documented in `docs/api/enegic.md` from the
+probe rather than from community sources. Minute resolution, cumulative registers, everything back
+to the device's registration.
 
 **Writing history — verified mechanism, not yet used here.** Home Assistant exposes
 `homeassistant.components.recorder.statistics.async_import_statistics`, which writes hourly
@@ -51,23 +85,33 @@ never-purged one this project exists to accumulate.
 
 ## Open questions
 
-1. Does `/getphasedata` exist, and what does its request body look like?
-2. What granularity does it return — the `PhaseHour` bucket, or something finer?
-3. Does it return the cumulative registers or per-period sums? `async_import_statistics` wants both
-   `sum` and `state`, and the mapping differs depending on which the endpoint gives.
-4. How far back does the free tier retain? The retention limit is the reason this project exists, so
-   the backfill window is probably short.
+1. ~~Does `/getphasedata` exist, and what does its request body look like?~~ **Yes.**
+   `PUT`, `{itemId, startTime, endTime?}`, ISO dates read as UTC. See `docs/api/enegic.md`.
+2. ~~What granularity does it return?~~ **One point per minute**, finer than `PhaseHour`.
+3. ~~Cumulative registers or per-period sums?~~ **Cumulative.** `hwi` / `hwo` on every point, so
+   `state` maps directly and `sum` follows from the deltas.
+4. **How far back does the free tier retain?** Still open, and not answerable yet: the account
+   serves everything back to the device's registration on 2026-08-29, which is younger than any
+   plausible limit. Re-probe once the device is a few months old. Not blocking — a backfill needs
+   to reach back hours, not months.
 5. How are gaps detected — compare the counter delta against elapsed time on the first successful
-   poll after a failure, or ask the recorder which hours are missing?
+   poll after a failure, or ask the recorder which hours are missing? `measure_gaps.py` does the
+   latter over the websocket API; in-process the recorder can be asked directly.
 6. What happens to a spike already written into the resumption hour? Re-importing that hour has to
-   correct it, not add to it.
+   correct it, not add to it. Still open, and now the main design question — the 9-hour gap put
+   27 kWh into one hour, so getting this wrong is worse than the gap.
+7. New: which timezone does a rewritten hour belong to? `/getphasedata` labels points in the item's
+   timezone and Home Assistant's statistics are UTC-keyed. This has to be converted once, in one
+   place, with a test.
 
 ## Do not
 
 - Do not synthesise readings. Interpolating a flat average across the gap would write numbers the
   meter never reported into the one table this project treats as ground truth. Either the API can
-  say what happened, or the hours stay empty and honest.
-- Do not start this before the gaps are measured. See above.
+  say what happened, or the hours stay empty and honest. The probe makes this moot — the API does
+  say what happened, to the minute.
+- Do not trust an empty `/getphasedata` response. A wrong parameter name returns `200 []`, which is
+  indistinguishable from a genuinely empty range unless the code checks.
 
 ## Learnings worth keeping regardless
 

@@ -70,14 +70,20 @@ leans on HA's reauth flow for renewal instead.
 | `/refreshtoken` | PUT | Documented | Renew a token |
 | `/getaccountoverview` | GET | Confirmed | List the devices ("items") on the account |
 | `/getlatestpackets` | PUT | Confirmed | Current readings per item |
-| `/getphasedata` | POST | Documented | Historical, date-ranged time series |
+| `/getphasedata` | PUT | Confirmed | Historical, date-ranged time series |
 | `/getuserinfo` | GET | Documented | Profile information |
 | `/isactivated` | PUT | Documented | Activation status |
 | `/getitemuserparameters` | PUT | Documented | Per-device settings |
 | `/getreporterssettingsforuser` | GET | Confirmed | EV-charger reporter settings |
 
 Note that `/getlatestpackets` is a **PUT** despite being a read, and `/getaccountoverview` is a
-**GET**. The verbs aren't consistent; don't infer them.
+**GET**. The verbs aren't consistent; don't infer them. `/getphasedata` is a **PUT** as well, and
+answers `405` to the `POST` that `toshi38` documents.
+
+The server is [Nancy](https://github.com/NancyFx/Nancy), judging by its 404 page. It exposes no
+metadata or type-listing endpoint, so request shapes have to be found by trial. Its model binder
+ignores unknown fields silently, which means a wrong parameter name reads as an empty result rather
+than an error — see `/getphasedata` below for how misleading that is.
 
 `/getreporterssettingsforuser` returns the load-balancing settings — `AllowedCurrent`,
 `MainsFuseLevel`, `SafeModeCurrent` and `Mode` — as used by `PetrolHead2/perific-meter`. It returns
@@ -166,6 +172,67 @@ registers and only the hour and day buckets carry `hwpi` / `hwpo`. The per-bucke
 per-phase counter it documents as ~0.184 J per unit. Our device reports `hiavg` / `huavg` / `hwi`
 instead. The `h` prefix plausibly marks HAN-sourced measurements against clamp-measured ones. This is
 the concrete reason the client parses tolerantly rather than validating a fixed schema.
+
+### `PUT /getphasedata` — **Confirmed**
+
+Historical time series for one item. Probed against a real v3 HAN device on 2026-09-21 with
+`scripts/probe_api.py --phasedata`; **every detail below contradicts `toshi38`'s documentation**,
+which gives the verb, both parameter names and the content type wrongly.
+
+```json
+{ "itemId": 1234567890123, "startTime": "2026-09-21T00:00:00", "endTime": "2026-09-21T06:00:00" }
+```
+
+| Field | Required | Note |
+|---|---|---|
+| `itemId` | yes | `400` without it |
+| `startTime` | yes | `400` without it |
+| `endTime` | no | defaults to now |
+| `itemType` | no | accepted and ignored for a `Phase` item; any value other than `"Phase"` answers `500` |
+
+**Timestamps are asymmetric, and this is the trap.** `startTime` and `endTime` are naive ISO strings
+read as **UTC**. The `ts` values that come back are naive strings in the **item's own timezone**
+(`TimeZone` on the item, `Europe/Stockholm` here). Requesting `05:00`–`06:00` returns points labelled
+`07:00`–`07:59`. The range is honoured exactly; only the labels shift. Anything writing these into
+Home Assistant statistics has to convert, or it books energy two hours from where it belongs.
+
+Other ways to get it wrong, all of which were observed:
+
+- `POST` → `405`. `GET` → `405`.
+- The documented `fromDate` / `toDate` → `200` with `[]`. They bind to nothing and Nancy ignores
+  them, so a wrong name looks exactly like "no data for that range".
+- `startTime` / `endTime` carrying epoch milliseconds → `500`. The fields are typed as dates.
+- An empty body → `400 Invalid ...`.
+
+Response — a list of groups, each holding the points:
+
+```json
+[
+  {
+    "dt": "2026-01-01T00:00:00",
+    "data": [
+      { "ts": "2026-09-21T07:59:00", "data": { "dv": 2, "hiavg": [...], "himin": [...],
+                                               "himax": [...], "huavg": [...],
+                                               "hwi": 248901.054, "hwo": 18116.956 } }
+    ]
+  }
+]
+```
+
+`dt` was `2026-01-01T00:00:00` for every window probed, including ones entirely inside September. It
+does not appear to be a date-bucket key; treat the grouping as one element and read `data`.
+
+**Granularity is one point per minute**, evenly spaced, at every window length probed — not the
+`PhaseHour` bucket. A 12-hour window returns 720 points and a one-day window 1440.
+
+**The points carry `hwi` and `hwo`**, the same cumulative kWh registers as the live packets, so
+`state` for `async_import_statistics` is available directly and `sum` follows from the deltas. This
+is the single fact the statistics backfill was blocked on.
+
+Retention is **not yet measured**. The oldest point the account will serve is `2026-08-29T17:16`,
+one minute after the device's own registration — `ItemId` is a millisecond epoch and decodes to
+`2026-08-29T15:15:23Z`. Everything since installation is available; the device is simply younger
+than any plausible retention limit, so the limit has not been observed through this endpoint.
 
 ## `data` field reference
 

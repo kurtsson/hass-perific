@@ -91,8 +91,21 @@ known-first-party = ["custom_components.perific"]
     "D103",
     "D107",
     "PLR0911",
+    "PLR0913",  # send() takes one parameter per request encoding it can try
+    "PLR0915",  # main() is a linear script: one statement per probe step
     "PLR2004",
     "S310",
+    "T20",
+    "TRY301",
+]
+# The gap measurement is a diagnostic script on the same terms as the probe above:
+# stdout is its output, and the module docstring documents it rather than one
+# docstring per helper.
+"scripts/measure_gaps.py" = [
+    "D102",
+    "D103",
+    "D107",
+    "PLR2004",
     "T20",
     "TRY301",
 ]

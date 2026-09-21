@@ -15,7 +15,8 @@ into HA so it lands in long-term statistics.
 | `docs/plans/` | Implementation plans, dated. |
 | `docs/api/enegic.md` | API reference. The endpoint and field documentation lives here, not in code comments. |
 | `docs/device-notes.md` | Confirmed field meanings and units, from the probe. |
-| `scripts/probe_api.py` | API probe. Standard library only, so it runs under bare `python3`. Loads `.env` itself. |
+| `scripts/probe_api.py` | API probe. Standard library only, so it runs under bare `python3`. Loads `.env` itself. `--phasedata` probes the historical endpoint instead. |
+| `scripts/measure_gaps.py` | Reports the hours missing from the real instance's long-term statistics. Read-only; needs the venv for `aiohttp`, so run it with `uv run`. |
 | `scripts/dev-sync.sh` | Copies the component into the local container and restarts it. Run after every edit. |
 | `scripts/deploy.sh` | Ships the component to the real instance and verifies it came back. Final verification only. |
 | `tests/fixtures/` | Redacted real API responses. |
