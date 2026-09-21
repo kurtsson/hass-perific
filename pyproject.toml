@@ -22,7 +22,7 @@ dev = [
 # plugin pins Home Assistant itself, so its version is what sets the floor.
 minimum-homeassistant = [
     "pytest",
-    "pytest-homeassistant-custom-component==0.13.330",
+    "pytest-homeassistant-custom-component==0.13.365",
 ]
 
 [tool.uv]
