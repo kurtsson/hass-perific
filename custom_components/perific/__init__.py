@@ -40,6 +40,11 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 IMPORT_HISTORY_SCHEMA = vol.Schema({vol.Optional(ATTR_START): cv.datetime})
 
+# `async_setup` exists only to register the service, so there is nothing to
+# configure in YAML. Without this, hassfest flags the integration for defining
+# `async_setup` with no schema.
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 
 async def async_setup(hass: HomeAssistant, _config: ConfigType) -> bool:
     """Register the integration-wide service.
