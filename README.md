@@ -18,7 +18,7 @@ feeds them to the Energy dashboard and long-term statistics.
 
 ## Why this exists
 
-I'm Martin Kurtsson ([@kurtsson](https://github.com/kurtsson)), and I wrote this for my own house.
+I'm Martin Kurtsson ([@kurtsson](https://github.com/kurtsson)), and this runs on my own house.
 
 The Perific app is good at showing what the meter is doing right now. What it doesn't do is keep the
 history — on a free account the detail ages out, so a question like *"how did this October compare
@@ -28,14 +28,17 @@ Home Assistant can, and the mechanism is worth knowing about before you commit t
 purges detailed state history after a few days, but the hourly `statistics` table it compiles
 alongside is never purged — it is designed to be kept indefinitely. So once the meter is feeding
 Home Assistant, every hour of every year stays queryable, on hardware you control and in a database
-you can back up. Long-term retention is the point of this integration; the live readings are a
-by-product of getting there.
+you can back up.
 
-That only works if the sensors are typed correctly. Home Assistant decides whether to record
-statistics from a sensor's `device_class`, `state_class` and unit, and when the combination is wrong
-it declines and logs a warning — the integration appears to work, entities update, and no history
-accumulates. Getting that right, and proving it against a real device, is most of what this project
-is.
+Kilowatt-hours are only half of it, though. The question I actually wanted answered was the money:
+what the electricity cost, and what the solar earned by exporting the surplus. Home Assistant won't
+work that out for an imported series — it refuses to price a statistic it didn't record itself — so
+this integration does the arithmetic and writes its own. Import carries the supplier's markup,
+energy tax and VAT; export carries none of them, because a household selling surplus charges
+neither. Both are hourly, and last as long as the energy they price.
+
+So: a permanent per-hour record of what came in, what went out, what it cost and what it earned —
+on hardware you own, for a meter whose vendor keeps none of it.
 
 ## What it does
 
@@ -59,6 +62,20 @@ What it can't do:
 - **Not fast enough for load balancing.** The device reports roughly every 10 seconds, but polling
   a cloud API that hard isn't reasonable and its rate limits are undocumented. Treat this as
   monitoring and history, not as a control loop.
+
+Both of the first two gaps are filled by integrations you probably already run, and the Energy
+dashboard is where the pieces meet:
+
+- **Prices.** Give it any sensor reporting a spot price per kWh — [Nord Pool](https://www.home-assistant.io/integrations/nordpool/),
+  [Tibber](https://www.home-assistant.io/integrations/tibber/) or your own template sensor — and
+  every hour of import and export is priced with your actual contract terms. See [Cost](#cost).
+- **Production.** Add your inverter's integration, such as
+  [SolarEdge](https://www.home-assistant.io/integrations/solaredge/), and the dashboard can tell
+  what your panels made apart from what you bought — self-consumption on one side, exported surplus
+  on the other, each with its own money attached.
+
+Neither is required, and nothing here depends on a particular brand: the meter measures the grid
+connection point, and the other integrations fill in around it.
 
 This is an unofficial, personal project. It is not affiliated with, endorsed by, or supported by
 Perific or Enegic, and it relies on an undocumented API that they are free to change.
