@@ -18,7 +18,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 # ItemPackets parameterises the coordinator's base class, so it is needed at runtime.
 from .api import ItemPackets, PerificAuthError, PerificError, PerificRateLimitError
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import AUTH_FAILURES_BEFORE_REAUTH, DEFAULT_SCAN_INTERVAL, DOMAIN
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -61,9 +61,16 @@ class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
         self.client = client
         self.meters: list[Item] = []
         self._rate_limited = False
+        self.auth_failures = 0
 
     async def _async_setup(self) -> None:
-        """Discover the account's meters, once per setup of the config entry."""
+        """Discover the account's meters, once per setup of the config entry.
+
+        A rejection here escalates immediately, unlike the polling path below. Setup
+        failures retry with a fresh coordinator, so a counter could never reach its
+        threshold and a genuinely dead token would retry forever without ever asking
+        for a password.
+        """
         try:
             self.meters = await self.client.async_get_meters()
         except PerificAuthError as err:
@@ -81,9 +88,14 @@ class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
         try:
             packets = await self.client.async_get_latest_packets()
         except PerificAuthError as err:
-            # Never wrapped in UpdateFailed. Wrapped, the coordinator reads it as a
-            # transient failure, reauth never triggers, and updates stop silently.
-            raise ConfigEntryAuthFailed(str(err)) from err
+            # ConfigEntryAuthFailed is the only exception the coordinator does not
+            # reschedule after, so raising it ends polling until someone answers the
+            # prompt. Reserve that for a rejection that repeats; a lone 401 is worth
+            # one more poll first.
+            self.auth_failures += 1
+            if self.auth_failures >= AUTH_FAILURES_BEFORE_REAUTH:
+                raise ConfigEntryAuthFailed(str(err)) from err
+            raise UpdateFailed(str(err)) from err
         except PerificRateLimitError as err:
             self._async_rate_limited()
             raise UpdateFailed(
@@ -93,6 +105,7 @@ class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
         except PerificError as err:
             raise UpdateFailed(str(err)) from err
 
+        self.auth_failures = 0
         self._async_rate_limit_cleared()
         return packets
 

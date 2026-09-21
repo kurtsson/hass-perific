@@ -5,7 +5,7 @@ Home Assistant integration for the **Perific One** energy monitor.
 Reads grid import and export from your electricity meter's HAN port via the Enegic cloud API, and
 feeds them to the Energy dashboard and long-term statistics.
 
-> **Early days.** Version 0.3.0, running against one household's meter. The sensors and their typing
+> **Early days.** Version 0.3.1, running against one household's meter. The sensors and their typing
 > are verified, but the API is undocumented and this has been exercised on a single device — expect
 > rough edges, and please open an issue if you hit one.
 

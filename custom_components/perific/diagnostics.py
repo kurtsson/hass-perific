@@ -47,6 +47,7 @@ async def async_get_config_entry_diagnostics(
                 if interval
                 else None,
                 "meter_count": len(coordinator.meters),
+                "consecutive_auth_failures": coordinator.auth_failures,
             },
             "meters": [asdict(meter) for meter in coordinator.meters],
             "packets": {

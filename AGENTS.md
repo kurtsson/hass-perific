@@ -94,8 +94,12 @@ guessing.
 `TOTAL_INCREASING`. The Energy dashboard computes net from import and export itself. See
 `CONTEXT.md` — both community reference integrations get this wrong.
 
-**Raise `ConfigEntryAuthFailed` directly**, never wrapped in `UpdateFailed`. Wrapped, HA's reauth
-flow never triggers and the integration just stops updating.
+**Raise `ConfigEntryAuthFailed` directly**, never wrapped in `UpdateFailed` — but only once a
+rejection has repeated. Wrapped forever, HA's reauth flow never triggers and the integration just
+stops updating. Raised on the first 401, it is just as bad in the other direction: the coordinator
+does not reschedule after `ConfigEntryAuthFailed` (`update_coordinator.py`, the `if not auth_failed`
+guard around `_schedule_refresh`), so one bad answer from the API ends collection until a human
+answers the prompt. Count consecutive rejections and escalate on the third.
 
 **Poll slowly.** The API's rate limits are unverified and the community sources contradict each
 other. Faster polling buys nothing — statistics are hourly buckets.

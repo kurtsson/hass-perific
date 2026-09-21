@@ -100,6 +100,14 @@ The constraint that makes this work: **`ConfigEntryAuthFailed` must be raised di
 wrapped in `UpdateFailed`.** Wrapped, the coordinator treats it as a transient failure, reauth never
 triggers, and the integration silently stops updating.
 
+The symmetric mistake costs more. `DataUpdateCoordinator` guards its reschedule with
+`if not auth_failed`, so `ConfigEntryAuthFailed` does not merely fail one poll — it ends polling
+until reauth completes or the entry reloads. A live instance produced two 401s thirteen hours apart
+on a token valid for another year, and each one stopped collection outright. So rejections are
+counted, and only the third consecutive one escalates; any success resets the count. Setup is the
+exception and escalates immediately, because a failed setup is retried with a fresh coordinator and
+a counter there could never reach its threshold.
+
 `/refreshtoken` exists but its prerequisites are unverified, so nothing depends on it. Re-minting via
 `/createtoken` always works.
 

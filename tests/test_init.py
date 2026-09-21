@@ -22,6 +22,7 @@ from custom_components.perific.api import (
     parse_latest_packets,
 )
 from custom_components.perific.const import (
+    AUTH_FAILURES_BEFORE_REAUTH,
     CONF_TOKEN_VALID_TO,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -157,21 +158,67 @@ class TestSetup:
 class TestPolling:
     """What each client failure does to an entry that is already running."""
 
-    async def test_an_expired_token_triggers_reauth(
+    async def test_a_single_rejection_does_not_stop_collection(
         self,
         hass: HomeAssistant,
         setup_integration: MockConfigEntry,
         mock_client: AsyncMock,
     ) -> None:
-        """Wrapped in UpdateFailed this would never fire, and updates would just stop."""
+        """Home Assistant never reschedules after ConfigEntryAuthFailed.
+
+        Escalating on the first 401 ends collection until someone answers the prompt,
+        which is far too much to pay for one bad answer from the API.
+        """
         coordinator = setup_integration.runtime_data
-        mock_client.async_get_latest_packets.side_effect = PerificAuthError("expired")
+        mock_client.async_get_latest_packets.side_effect = PerificAuthError("rejected")
 
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
         assert not coordinator.last_update_success
+        assert not _reauth_flows(hass)
+        assert coordinator.auth_failures == 1
+
+    async def test_a_rejection_that_repeats_triggers_reauth(
+        self,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """A token that is genuinely dead still has to reach the user."""
+        coordinator = setup_integration.runtime_data
+        mock_client.async_get_latest_packets.side_effect = PerificAuthError("expired")
+
+        for _ in range(AUTH_FAILURES_BEFORE_REAUTH):
+            await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        assert not coordinator.last_update_success
         assert len(_reauth_flows(hass)) == 1
+
+    async def test_a_success_forgives_earlier_rejections(
+        self,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+        packets_t0: Any,
+    ) -> None:
+        """Otherwise isolated 401s days apart would eventually add up to a prompt."""
+        coordinator = setup_integration.runtime_data
+        good = parse_latest_packets(packets_t0)
+
+        for _ in range(AUTH_FAILURES_BEFORE_REAUTH - 1):
+            mock_client.async_get_latest_packets.side_effect = PerificAuthError("blip")
+            await coordinator.async_refresh()
+
+            mock_client.async_get_latest_packets.side_effect = None
+            mock_client.async_get_latest_packets.return_value = good
+            await coordinator.async_refresh()
+            assert coordinator.auth_failures == 0
+
+        await hass.async_block_till_done()
+        assert coordinator.last_update_success
+        assert not _reauth_flows(hass)
 
     async def test_a_rate_limit_carries_its_retry_hint(
         self,

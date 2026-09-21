@@ -1,6 +1,6 @@
 [project]
 name = "hass-perific"
-version = "0.3.0"
+version = "0.3.1"
 description = "Home Assistant custom integration for the Perific / Enegic energy monitor"
 requires-python = ">=3.14.2"
 
