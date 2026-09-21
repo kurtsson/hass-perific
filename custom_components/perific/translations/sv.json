@@ -33,12 +33,24 @@
   "options": {
     "step": {
       "init": {
-        "description": "Hur ofta Perific APIet ska läsas av. Energiregistren uppdateras bara en gång i minuten; realtidsdatan uppdateras var tionde sekund, så ett kortare intervall ger enbart färskare effekt- och strömvärden. APIets gränser är odokumenterade, så sänk värdet försiktigt.",
+        "description": "**Avläsningen** gäller bara sensorerna för effekt, ström och spänning. Realtidsdatan uppdateras var tionde sekund, så ett kortare intervall ger enbart färskare värden; APIets gränser är odokumenterade, så sänk värdet försiktigt. Energin påverkas inte — den hämtas från Perifics moln i stället för att räknas upp vid varje avläsning.\n\n**Kostnaden** är valfri, och behövs just på grund av den hämtningen: Home Assistant vägrar prissätta en energikälla den inte själv har registrerat, så den här integrationen räknar ut priset och skriver en egen kostnadsserie som energipanelen kan använda. Lämna prisentiteten tom så sker inget av detta.\n\nKöpt och såld el prissätts olika. Det du köper kostar `(spotpris + påslag + energiskatt) × moms`. Det du säljer ger `spotpris + påslag för såld el`, utan skatt och utan moms, eftersom ett hushåll som säljer överskott inte tar ut någotdera.",
         "data": {
-          "scan_interval": "Avläsningsintervall"
+          "scan_interval": "Avläsningsintervall",
+          "price_entity": "Entitet med spotpris",
+          "price_markup": "Elbolagets påslag",
+          "energy_tax": "Energiskatt",
+          "vat_percent": "Moms",
+          "export_price_entity": "Entitet med spotpris för såld el",
+          "export_premium": "Påslag för såld el"
         },
         "data_description": {
-          "scan_interval": "Sekunder mellan avläsningar."
+          "scan_interval": "Sekunder mellan avläsningar.",
+          "price_entity": "En sensor med spotpriset per kWh, exklusive moms — till exempel en Nord Pool-prissensor. Lämna tomt så importeras ingen kostnad alls. Priser kan bara läsas så långt bak som sensorns egen historik räcker, så kostnaden börjar senare än energin den prissätter.",
+          "price_markup": "Elbolagets påslag per kWh på el du köper, exklusive moms. Andra avgifter per kWh, som elöverföring, hör också hemma här. Läggs inte på det du säljer.",
+          "energy_tax": "Energiskatt per kWh på el du köper, exklusive moms. Den publicerade svenska siffran 53,50 öre/kWh inkluderar moms, så värdet att ange är 42,80 öre — alltså 0,4280. Läggs inte på det du säljer.",
+          "vat_percent": "Läggs på spotpriset, påslaget och skatten tillsammans, för el du köper. 25 i Sverige. Läggs inte på det du säljer.",
+          "export_price_entity": "Lämna tomt om du inte säljer till ett annat spotpris än du köper — då används entiteten ovan för båda. Det här delar bara priset: det du säljer ger fortfarande spotpris plus påslaget nedan, utan elbolagets påslag, utan skatt och utan moms.",
+          "export_premium": "Läggs på spotpriset per kWh för det du säljer. Det är den enda justeringen för såld el; påslaget, energiskatten och momsen ovan gäller el du köper."
         }
       }
     }
@@ -56,6 +68,12 @@
       },
       "energy_export": {
         "name": "Såld elektricitet"
+      },
+      "energy_import_cost": {
+        "name": "Kostnad för inköpt elektricitet"
+      },
+      "energy_export_compensation": {
+        "name": "Ersättning för såld elektricitet"
       },
       "power_import": {
         "name": "Inköpt effekt"

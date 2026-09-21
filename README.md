@@ -5,7 +5,7 @@ Home Assistant integration for the **Perific One** energy monitor.
 Reads grid import and export from your electricity meter's HAN port via the Enegic cloud API, and
 feeds them to the Energy dashboard and long-term statistics.
 
-> **Early days.** Version 0.4.0, running against one household's meter. The sensors and their typing
+> **Early days.** Version 0.5.0, running against one household's meter. The sensors and their typing
 > are verified, but the API is undocumented and this has been exercised on a single device — expect
 > rough edges, and please open an issue if you hit one.
 
@@ -33,15 +33,14 @@ is.
 ## What it does
 
 The Perific One reads your electricity meter's HAN port and reports to Enegic's cloud. This
-integration polls that cloud API and publishes twelve sensors for the meter: cumulative import and
-export energy, live import and export power, per-phase current and voltage, and two diagnostics.
-They feed the Energy dashboard, long-term statistics, history and automations like anything else in
-Home Assistant.
+integration polls that cloud API and publishes ten sensors for the meter: live import and export
+power, per-phase current and voltage, and two diagnostics. They feed the Energy dashboard, history
+and automations like anything else in Home Assistant.
 
-Energy is handled differently from the rest. Rather than accumulating it from whatever Home
-Assistant happened to be awake for, the integration imports the hourly series from Enegic's own
-record — back to the day the device was registered, and topped up every hour. An outage leaves no
-hole and no catch-up spike. See [Energy history](#energy-history).
+Energy is not among them, and that is the point. Rather than accumulating it from whatever Home
+Assistant happened to be awake for, the integration imports the hourly series straight from Enegic's
+own record — back to the day the device was registered, and topped up every hour. An outage leaves
+no hole and no catch-up spike. See [Energy history](#energy-history).
 
 What it can't do:
 
@@ -61,8 +60,6 @@ Perific or Enegic, and it relies on an undocumented API that they are free to ch
 
 | Sensor | Unit | Status | Notes |
 |---|---|---|---|
-| Energy imported | kWh | ✅ | Cumulative meter register. For the Energy dashboard prefer the imported history, not this. |
-| Energy exported | kWh | ✅ | Cumulative meter register. As above. |
 | Power imported | W | ✅ | Live. Use as *grid consumption* under the dashboard's two-sensor power mode. |
 | Power exported | W | ✅ | Live. The matching *return to grid* sensor. |
 | Current L1–L3 | A | ✅ | Signed: negative means that phase is exporting. |
@@ -153,16 +150,9 @@ connection*, and fill it in like this:
 | → Power imported from grid | **Power imported** | the live sensor |
 | → Power exported to grid | **Power exported** | the live sensor |
 
-**The two energy fields offer two lookalikes, and the difference matters.** Picking the wrong one
-is the single most likely mistake in this whole setup, so:
-
-- The one to use has a **chart icon** and says **Perific** underneath. That is the imported
-  history — every hour the meter ever recorded, with no holes from Home Assistant restarts.
-- The other has a **grid icon** and says your meter's name underneath. That is the live sensor
-  entity, and it only holds the hours Home Assistant was awake for.
-
-Both are named the same thing on purpose, so that the picker reads consistently in your own
-language. Go by the icon.
+The two energy entries carry a **chart icon** and say **Perific** underneath, because they are
+imported statistics rather than entities. They are the only energy options this integration offers —
+there is no sensor version to confuse them with.
 
 The power half is a different matter: **pick the ordinary sensors there.** Power is a live reading
 that nothing can reconstruct after the fact, so there is no history version of it and the picker
@@ -172,8 +162,8 @@ import and export can both be non-zero at the same instant, and the other modes 
 sensor that is positive one way and negative the other. Home Assistant builds its own helper sensor
 from the pair and says so in the dialog.
 
-Cost tracking is independent of this integration — point it at whatever price entity you already
-have, such as a Nord Pool sensor.
+The same dialog holds the cost fields, and those need a word of their own — see [Cost](#cost)
+below.
 
 ### Energy history
 
@@ -196,15 +186,72 @@ writes it straight into long-term statistics:
 Hours the vendor has no data for stay empty rather than being interpolated. Nothing here invents a
 reading the meter never reported.
 
-Two consequences worth knowing:
+One consequence worth knowing: these series have **no entity**. They appear in the Energy dashboard
+and under **Developer Tools → Statistics**, and nowhere else — not in History, and not as something
+you can put on a card or use in an automation. There are deliberately no cumulative-energy sensors
+either, because a second copy of the same series under a near-identical name is worse than no copy
+at all. The power, current and voltage sensors are still ordinary entities and behave normally.
 
-- These series have **no entity**. They appear in the Energy dashboard and under **Developer Tools →
-  Statistics**, and nowhere else — not in History, and not as something you can put on a card or
-  use in an automation. The live sensors are still there for that.
-- The **Energy imported** and **Energy exported** *sensors* still exist and still keep their own
-  statistics, which is the gappy version described above. They are left alone deliberately, so you
-  can compare the two before committing. Once you trust the history, just leave the dashboard
-  pointed at it.
+### Cost
+
+Home Assistant normally works out cost itself, from the energy entity and a price entity. It
+cannot here, and this is not an oversight on either side: `energy/data.py` **rejects** a price
+entity outright when the energy source is an imported statistic, and directs you at the dashboard's
+`stat_cost` field instead. So the integration works the price out and fills that field's series.
+
+It is off until you give it a price entity, under the integration's **Configure** button.
+
+**Buying and selling are priced differently**, and that is the part worth reading twice:
+
+| | Formula |
+|---|---|
+| What you buy | `(spot + supplier markup + energy tax) × VAT` |
+| What you sell | `spot + export premium` |
+
+Export carries no energy tax and no VAT, because a household selling surplus charges neither. The
+markup, tax and VAT fields apply *only* to what you buy, even though both sides read the same spot
+price entity by default.
+
+A Swedish worked example, for one hour in SE3:
+
+| | öre/kWh |
+|---|---|
+| Nord Pool spot, excluding VAT | 139.37 |
+| Supplier markup (påslag) | 5.00 |
+| Energy tax (energiskatt), excluding VAT | 42.80 |
+| **Subtotal, excluding VAT** | **187.17** |
+| **× 1.25 VAT** | **233.96** — about 2.34 kr/kWh |
+
+Entered as `0.05`, `0.4280` and `25`, since the price entity reports SEK/kWh rather than öre.
+
+**The energy tax field is the one that catches people.** The published Swedish figure of 53.50
+öre/kWh *includes* VAT. Enter 42.80, or VAT gets applied to it twice.
+
+Two things this cannot be:
+
+- **It is not your bill.** Fixed monthly charges — grid subscription, supplier fee — are not per
+  kWh and have nowhere to go in this model. What you get is an accurate *variable* cost.
+- **It starts later than your energy history.** Prices are read from the price entity's own
+  recorded statistics, so cost begins when Home Assistant first saw that sensor. Energy imported
+  from before then stays uncosted rather than being priced at a guess.
+- **It trails the energy by an hour.** An hour is costed once the price entity has a *complete*
+  hourly average for it, which is only true once the hour is over. The newest hour of energy is
+  therefore always uncosted for a while; the next run picks it up.
+
+The series appear within the hour, and then have to be pointed at from the Energy dashboard — this
+does not happen by itself. Reopen *Configure grid connection*, and for each of the two sources:
+
+| Field in the dialog | What to pick |
+|---|---|
+| Use an entity tracking the total costs | **Imported electricity cost** |
+| …and on the return-to-grid source | **Exported electricity compensation** |
+
+**The other cost options are greyed out, and that is expected.** *Use an entity with current price*
+and *Use a static price* are refused outright next to an imported statistic; the total-cost field is
+the only one Home Assistant will accept, and filling it makes the configuration valid again.
+
+Both entries carry a chart icon and say **Perific** underneath, like the energy ones — they are
+statistics, not entities, so they will not show up anywhere you can pick an entity.
 
 To force a rebuild — after a long outage, or if you want to re-read a period — call
 **`perific.import_history`**. With no arguments it continues from wherever the last import stopped;
@@ -341,10 +388,12 @@ What has been extracted from them, with a confidence level on every claim, is in
 
 ### Where this one differs
 
-- **No net-energy sensor.** Net (import − export) can decrease, and a `TOTAL_INCREASING` sensor
-  reads every decrease as a meter reset, which corrupts the long-term statistics series. The Energy
-  dashboard derives net from import and export by itself, so there is nothing to gain from
-  publishing it.
+- **Energy never becomes a sensor.** The other integrations publish cumulative counters and let
+  Home Assistant build the hourly series from whatever it managed to poll, so a restart or an
+  outage leaves a hole and the missing energy reappears as one spike in the hour collection
+  resumed. Here the hourly series is read from the vendor's own record instead, which makes the
+  hole impossible rather than repairable. A net sensor is doubly wrong: net can decrease, and a
+  `TOTAL_INCREASING` counter reads every decrease as a meter reset.
 - **Power is computed, and split by direction.** There is no instantaneous power field in the API.
   Other integrations sum `|current| × voltage` into a single figure, one of them against a hardcoded
   230 V. Here the per-phase products keep their sign and are split into an import and an export

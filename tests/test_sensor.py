@@ -8,7 +8,7 @@ place that mistake surfaces loudly.
 from __future__ import annotations
 
 from dataclasses import replace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.components.sensor import (
@@ -23,7 +23,6 @@ from homeassistant.const import (
     EntityCategory,
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
-    UnitOfEnergy,
     UnitOfPower,
 )
 from homeassistant.core import HomeAssistant
@@ -48,13 +47,14 @@ from custom_components.perific.const import (
 )
 
 METER_ID = 10004
-ENERGY_KEYS = ("energy_import", "energy_export")
 POWER_KEYS = ("power_import", "power_export")
 CURRENT_KEYS = tuple(f"current_l{phase}" for phase in (1, 2, 3))
 VOLTAGE_KEYS = tuple(f"voltage_l{phase}" for phase in (1, 2, 3))
 REALTIME_KEYS = POWER_KEYS + CURRENT_KEYS + VOLTAGE_KEYS
 # Everything read straight out of a packet, so everything that can go unavailable.
-KEYS = ENERGY_KEYS + REALTIME_KEYS + (KEY_LAST_PACKET,)
+# No energy keys: the hourly energy series is imported into statistics rather
+# than published as an entity. See history.py.
+KEYS = (*REALTIME_KEYS, KEY_LAST_PACKET)
 ALL_KEYS = (*KEYS, KEY_STATUS)
 
 
@@ -92,15 +92,24 @@ def entity_ids(
 class TestTyping:
     """The typing that decides whether statistics get recorded at all."""
 
-    @pytest.mark.parametrize("key", ENERGY_KEYS)
-    async def test_energy_is_typed_for_long_term_statistics(
-        self, hass: HomeAssistant, entity_ids: dict[str, str], key: str
+    async def test_no_entity_carries_a_cumulative_counter(
+        self, hass: HomeAssistant, setup_integration: MockConfigEntry
     ) -> None:
-        state = hass.states.get(entity_ids[key])
-        assert state is not None
-        assert state.attributes[ATTR_DEVICE_CLASS] == SensorDeviceClass.ENERGY
-        assert state.attributes[ATTR_STATE_CLASS] == SensorStateClass.TOTAL_INCREASING
-        assert state.attributes[ATTR_UNIT_OF_MEASUREMENT] == UnitOfEnergy.KILO_WATT_HOUR
+        """Energy reaches statistics through the history import, not an entity.
+
+        A TOTAL_INCREASING entity here would build a second, gappier copy of the
+        same series under a name a user cannot tell apart in the picker.
+        """
+        entities = er.async_entries_for_config_entry(
+            er.async_get(hass), setup_integration.entry_id
+        )
+        for entity in entities:
+            state = hass.states.get(entity.entity_id)
+            assert state is not None
+            assert (
+                state.attributes.get(ATTR_STATE_CLASS)
+                is not SensorStateClass.TOTAL_INCREASING
+            )
 
     @pytest.mark.parametrize("key", POWER_KEYS)
     async def test_power_is_typed_for_the_energy_dashboard(
@@ -164,17 +173,6 @@ class TestValue:
 
     @pytest.mark.parametrize(
         ("key", "expected"),
-        [("energy_import", 248718.155), ("energy_export", 18048.557)],
-    )
-    async def test_the_reading_comes_from_the_minute_bucket(
-        self, hass: HomeAssistant, entity_ids: dict[str, str], key: str, expected: float
-    ) -> None:
-        state = hass.states.get(entity_ids[key])
-        assert state is not None
-        assert float(state.state) == expected
-
-    @pytest.mark.parametrize(
-        ("key", "expected"),
         [
             ("current_l1", 10.0),
             ("current_l2", 7.5),
@@ -222,10 +220,13 @@ class TestValue:
             assert state_of(hass, entity_ids[key]) == STATE_UNAVAILABLE
 
     @pytest.mark.parametrize(
-        ("dropped", "lost", "kept"),
+        ("dropped", "lost"),
         [
-            (BUCKET_MINUTE, ENERGY_KEYS, REALTIME_KEYS),
-            (BUCKET_REALTIME, REALTIME_KEYS, ENERGY_KEYS),
+            (BUCKET_REALTIME, REALTIME_KEYS),
+            # Nothing: the minute bucket carried the energy registers, and no
+            # entity reads those any more. The history import gets them from
+            # /getphasedata instead.
+            (BUCKET_MINUTE, ()),
         ],
     )
     async def test_a_missing_bucket_costs_only_its_own_sensors(
@@ -236,9 +237,8 @@ class TestValue:
         mock_client: AsyncMock,
         dropped: str,
         lost: tuple[str, ...],
-        kept: tuple[str, ...],
     ) -> None:
-        """The two buckets carry different readings and fail independently."""
+        """A bucket going missing must not take unrelated readings down with it."""
         packets = mock_client.async_get_latest_packets.return_value
         stripped = {
             key: value
@@ -252,10 +252,10 @@ class TestValue:
         await setup_integration.runtime_data.async_refresh()
         await hass.async_block_till_done()
 
-        for key in lost:
-            assert state_of(hass, entity_ids[key]) == STATE_UNAVAILABLE
-        for key in kept:
-            assert state_of(hass, entity_ids[key]) != STATE_UNAVAILABLE
+        for key in KEYS:
+            expected_unavailable = key in lost
+            is_unavailable = state_of(hass, entity_ids[key]) == STATE_UNAVAILABLE
+            assert is_unavailable is expected_unavailable, key
 
 
 class TestIdentity:
@@ -382,118 +382,14 @@ class TestStatus:
         assert state_of(hass, entity_ids[KEY_STATUS]) == STATUS_OFFLINE
 
 
-class TestMonotonicityGuard:
-    """A cumulative counter that falls is read as a meter reset.
+class TestFallingReadings:
+    """Nothing here is guarded against falling any more.
 
-    Home Assistant books the whole new value as one period's consumption, which
-    corrupts exactly the long-term series this integration exists to build.
+    The monotonicity guard existed for the cumulative energy entities, which
+    are gone: that series is imported into statistics instead, and
+    ``history.statistic_rows`` refuses a falling register at the point where it
+    would matter. A measurement may fall freely.
     """
-
-    async def _poll(
-        self,
-        hass: HomeAssistant,
-        setup_integration: MockConfigEntry,
-        mock_client: AsyncMock,
-        energy_import: float | None,
-    ) -> None:
-        """Serve one more packet carrying the given import register."""
-        _set_energy_import(mock_client, energy_import)
-        await setup_integration.runtime_data.async_refresh()
-        await hass.async_block_till_done()
-
-    def _state(self, hass: HomeAssistant, entity_ids: dict[str, str]) -> str:
-        return state_of(hass, entity_ids["energy_import"])
-
-    async def test_a_flat_register_passes_straight_through(
-        self,
-        hass: HomeAssistant,
-        entity_ids: dict[str, str],
-        setup_integration: MockConfigEntry,
-        mock_client: AsyncMock,
-    ) -> None:
-        """Hours of an unchanged register are normal while the house exports."""
-        await self._poll(hass, setup_integration, mock_client, 248718.155)
-
-        assert float(self._state(hass, entity_ids)) == 248718.155
-
-    async def test_a_single_fall_is_held(
-        self,
-        hass: HomeAssistant,
-        entity_ids: dict[str, str],
-        setup_integration: MockConfigEntry,
-        mock_client: AsyncMock,
-    ) -> None:
-        await self._poll(hass, setup_integration, mock_client, 1000.0)
-
-        assert float(self._state(hass, entity_ids)) == 248718.155
-
-    async def test_a_fall_that_repeats_is_accepted(
-        self,
-        hass: HomeAssistant,
-        entity_ids: dict[str, str],
-        setup_integration: MockConfigEntry,
-        mock_client: AsyncMock,
-    ) -> None:
-        """A replaced meter really does start again, so this cannot hold forever."""
-        await self._poll(hass, setup_integration, mock_client, 1000.0)
-        await self._poll(hass, setup_integration, mock_client, 1000.5)
-
-        assert float(self._state(hass, entity_ids)) == 1000.5
-
-    async def test_a_recovery_discards_the_held_reading(
-        self,
-        hass: HomeAssistant,
-        entity_ids: dict[str, str],
-        setup_integration: MockConfigEntry,
-        mock_client: AsyncMock,
-    ) -> None:
-        """One stale packet followed by a good one must leave no trace."""
-        await self._poll(hass, setup_integration, mock_client, 1000.0)
-        await self._poll(hass, setup_integration, mock_client, 248718.200)
-
-        assert float(self._state(hass, entity_ids)) == 248718.200
-
-        await self._poll(hass, setup_integration, mock_client, 1000.0)
-        assert float(self._state(hass, entity_ids)) == 248718.200
-
-    async def test_the_baseline_survives_an_unavailable_period(
-        self,
-        hass: HomeAssistant,
-        entity_ids: dict[str, str],
-        setup_integration: MockConfigEntry,
-        mock_client: AsyncMock,
-    ) -> None:
-        """Otherwise a gap would let the next stale packet through unchallenged."""
-        await self._poll(hass, setup_integration, mock_client, None)
-        assert self._state(hass, entity_ids) == STATE_UNAVAILABLE
-
-        await self._poll(hass, setup_integration, mock_client, 1000.0)
-        assert float(self._state(hass, entity_ids)) == 248718.155
-
-    async def test_the_baseline_survives_a_restart(
-        self,
-        hass: HomeAssistant,
-        entity_ids: dict[str, str],
-        setup_integration: MockConfigEntry,
-        mock_client: AsyncMock,
-    ) -> None:
-        """Held in memory alone, the first reading after a restart is the baseline.
-
-        A register that fell while Home Assistant was down would then be published
-        as a meter reset, which is exactly what the guard exists to stop.
-        """
-        entity_id = entity_ids["energy_import"]
-        assert float(state_of(hass, entity_id)) == 248718.155
-
-        assert await hass.config_entries.async_unload(setup_integration.entry_id)
-        await hass.async_block_till_done()
-
-        _set_energy_import(mock_client, 1000.0)
-        with patch("custom_components.perific.EnegicClient", return_value=mock_client):
-            await hass.config_entries.async_setup(setup_integration.entry_id)
-            await hass.async_block_till_done()
-
-        assert float(state_of(hass, entity_id)) == 248718.155
 
     async def test_power_is_not_guarded(
         self,

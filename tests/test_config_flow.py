@@ -30,7 +30,11 @@ from custom_components.perific.api import (
 )
 from custom_components.perific.config_flow import OPTIONS_SCHEMA
 from custom_components.perific.const import (
+    CONF_ENERGY_TAX,
+    CONF_PRICE_ENTITY,
+    CONF_PRICE_MARKUP,
     CONF_TOKEN_VALID_TO,
+    CONF_VAT_PERCENT,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_SCAN_INTERVAL,
@@ -251,8 +255,30 @@ class TestOptions:
             await hass.async_block_till_done()
 
         assert result["type"] is FlowResultType.CREATE_ENTRY
-        assert setup_integration.options == {CONF_SCAN_INTERVAL: 30}
+        assert setup_integration.options[CONF_SCAN_INTERVAL] == 30
         assert setup_integration.runtime_data.update_interval == timedelta(seconds=30)
+
+    async def test_cost_is_off_until_a_price_entity_is_chosen(
+        self,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """Saving the form without touching the tariff must not start costing."""
+        with patch("custom_components.perific.EnegicClient", return_value=mock_client):
+            result = await hass.config_entries.options.async_init(
+                setup_integration.entry_id
+            )
+            result = await hass.config_entries.options.async_configure(
+                result["flow_id"], {CONF_SCAN_INTERVAL: 30}
+            )
+            await hass.async_block_till_done()
+
+        options = setup_integration.options
+        assert options.get(CONF_PRICE_ENTITY) is None
+        assert options[CONF_PRICE_MARKUP] == 0.0
+        assert options[CONF_ENERGY_TAX] == 0.0
+        assert options[CONF_VAT_PERCENT] == 0.0
 
     @pytest.mark.parametrize(
         "seconds", [MIN_SCAN_INTERVAL - 1, MAX_SCAN_INTERVAL + 1, 0, -5]

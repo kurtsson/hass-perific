@@ -20,7 +20,6 @@ from homeassistant.components.recorder.models import (
     StatisticMetaData,
 )
 from homeassistant.components.recorder.statistics import async_add_external_statistics
-from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
@@ -33,11 +32,24 @@ from custom_components.perific.api import (
     PhasePoint,
     parse_phase_data,
 )
-from custom_components.perific.const import DOMAIN, HISTORY_REGISTERS
+from custom_components.perific.const import (
+    CONF_ENERGY_TAX,
+    CONF_PRICE_ENTITY,
+    CONF_PRICE_MARKUP,
+    CONF_VAT_PERCENT,
+    COST_NAMES,
+    DOMAIN,
+    HISTORY_NAMES,
+    HISTORY_REGISTERS,
+)
 from custom_components.perific.history import (
     HistoryImporter,
     Resume,
+    Tariff,
+    async_register_names,
     async_resume_point,
+    cost_rows,
+    cost_statistic_id,
     hourly_registers,
     localise,
     registered_at,
@@ -57,7 +69,17 @@ if TYPE_CHECKING:
 STOCKHOLM = "Europe/Stockholm"
 
 # Taken from the live instance: sum - state is this constant on every row.
-LIVE_ANCHOR = Resume(offset=25.807 - 248762.995, after=None)
+LIVE_ANCHOR = Resume(state=248762.995, total=25.807, after=None)
+
+
+def anchor(offset: float) -> Resume:
+    """A resume point with the given register-to-sum offset."""
+    return Resume(state=0.0, total=offset, after=None)
+
+
+def H(hour: int) -> datetime:  # noqa: N802
+    """An hour on the capture's day, in UTC."""
+    return datetime(2026, 9, 21, hour, tzinfo=UTC)
 
 
 def point(naive: str, imported: float = 1.0) -> PhasePoint:
@@ -254,7 +276,9 @@ class TestStatisticIdentity:
     async def test_metadata_matches_what_the_recorder_requires(
         self, hass: HomeAssistant, meters: list[Item]
     ) -> None:
-        metadata = statistic_metadata(hass, meters[0], "energy_import")
+        metadata = statistic_metadata(
+            meters[0], "energy_import", "Imported electricity"
+        )
         # source must equal the part before the colon, or the import is refused.
         assert metadata["source"] == "perific"
         assert metadata["statistic_id"].startswith("perific:")
@@ -268,58 +292,54 @@ class TestStatisticIdentity:
         # solely as a fallback for a missing mean_type, which is never our case.
         assert "has_mean" not in metadata
 
-    async def test_metadata_names_the_two_registers_apart(
-        self, hass: HomeAssistant, meters: list[Item]
+    async def test_metadata_names_the_device_and_the_register(
+        self, meters: list[Item]
     ) -> None:
-        imported = name_of(statistic_metadata(hass, meters[0], "energy_import"))
-        exported = name_of(statistic_metadata(hass, meters[0], "energy_export"))
-        assert imported != exported
-
-    async def test_name_falls_back_to_english_without_an_entity(
-        self, hass: HomeAssistant, meters: list[Item]
-    ) -> None:
-        # Nothing registered in this test, so there is no resolved sensor name
-        # to borrow.
-        name = name_of(statistic_metadata(hass, meters[0], "energy_import"))
+        name = name_of(
+            statistic_metadata(meters[0], "energy_import", "Imported electricity")
+        )
         assert name.endswith("Imported electricity")
+        assert name != "Imported electricity", "the device should be named too"
 
-    async def test_name_borrows_the_sensors_translated_name(
-        self, hass: HomeAssistant, meters: list[Item]
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+class TestRegisterNames:
+    """An external statistic has no entity, so its name is a stored string.
+
+    Home Assistant offers no way to translate that, so the names are read out of
+    this integration's own translation files by the keys the retired energy
+    sensors used. Without it the picker shows English names beside the Swedish
+    power sensors.
+
+    ``enable_custom_integrations`` is required: without it Home Assistant cannot
+    find the integration to load any translations from.
+    """
+
+    async def test_english_by_default(self, hass: HomeAssistant) -> None:
+        assert await async_register_names(hass) == {
+            "energy_import": "Imported electricity",
+            "energy_export": "Exported electricity",
+            "energy_import_cost": "Imported electricity cost",
+            "energy_export_compensation": "Exported electricity compensation",
+        }
+
+    async def test_follows_the_instance_language(self, hass: HomeAssistant) -> None:
+        await hass.config.async_update(language="sv")
+
+        names = await async_register_names(hass)
+
+        assert names["energy_import"] == "Inköpt elektricitet"
+        assert names["energy_export"] == "Såld elektricitet"
+        assert names["energy_import_cost"] == "Kostnad för inköpt elektricitet"
+
+    async def test_falls_back_when_a_language_has_no_translation(
+        self, hass: HomeAssistant
     ) -> None:
-        """An external statistic's name is a plain stored string.
+        await hass.config.async_update(language="fr")
 
-        Home Assistant offers no way to translate it, so it is taken from the
-        matching sensor, which does carry a translation. Without this the
-        picker shows the two series in different languages.
-        """
-        meter = meters[0]
-        er.async_get(hass).async_get_or_create(
-            "sensor",
-            DOMAIN,
-            f"{meter.item_id}_energy_import",
-            original_name="Inköpt elektricitet",
-        )
+        names = await async_register_names(hass)
 
-        name = name_of(statistic_metadata(hass, meter, "energy_import"))
-
-        assert name.endswith("Inköpt elektricitet")
-
-    async def test_name_follows_a_user_rename(
-        self, hass: HomeAssistant, meters: list[Item]
-    ) -> None:
-        meter = meters[0]
-        registry = er.async_get(hass)
-        entry = registry.async_get_or_create(
-            "sensor",
-            DOMAIN,
-            f"{meter.item_id}_energy_import",
-            original_name="Inköpt elektricitet",
-        )
-        registry.async_update_entity(entry.entity_id, name="Husets elmätare")
-
-        name = name_of(statistic_metadata(hass, meter, "energy_import"))
-
-        assert name.endswith("Husets elmätare")
+        assert names == HISTORY_NAMES | COST_NAMES
 
     def test_registered_at_decodes_the_item_id(self) -> None:
         # ItemId is a millisecond epoch of the device's registration, and the
@@ -333,7 +353,7 @@ class TestStatisticRows:
     """Mapping end-of-hour registers onto importable rows."""
 
     def test_first_ever_import_starts_the_series_at_zero(self) -> None:
-        resume = Resume(offset=-248868.26, after=None)
+        resume = anchor(-248868.26)
         registers = {
             datetime(2026, 9, 21, 2, tzinfo=UTC): 248868.26,
             datetime(2026, 9, 21, 3, tzinfo=UTC): 248871.76,
@@ -362,7 +382,7 @@ class TestStatisticRows:
             datetime(2026, 9, 21, 3, tzinfo=UTC): 2.0,
             datetime(2026, 9, 21, 2, tzinfo=UTC): 1.0,
         }
-        rows = statistic_rows(registers, Resume(offset=0.0, after=None))
+        rows = statistic_rows(registers, anchor(0.0))
         assert [row["start"] for row in rows] == sorted(row["start"] for row in rows)
         assert all(row["start"].minute == 0 for row in rows)
         assert all(row["start"].tzinfo is not None for row in rows)
@@ -385,8 +405,8 @@ class TestStatisticRows:
         arithmetic that produced a value is the arithmetic that reproduces it.
         """
         registers = {datetime(2026, 9, 21, 2, tzinfo=UTC): 248868.26}
-        [first] = statistic_rows(registers, Resume(offset=-248868.26, after=None))
-        resume = Resume(offset=sum_of(first) - state_of(first), after=None)
+        [first] = statistic_rows(registers, anchor(-248868.26))
+        resume = Resume(state=state_of(first), total=sum_of(first), after=None)
         [again] = statistic_rows(registers, resume)
         assert sum_of(again) == pytest.approx(sum_of(first))
 
@@ -397,7 +417,7 @@ class TestStatisticRows:
             datetime(2026, 9, 21, 2, tzinfo=UTC): 18116.944,
             datetime(2026, 9, 21, 3, tzinfo=UTC): 18116.944,
         }
-        first, second = statistic_rows(registers, Resume(offset=0.0, after=None))
+        first, second = statistic_rows(registers, anchor(0.0))
         assert sum_of(second) == sum_of(first)
 
     def test_a_falling_register_is_refused(self) -> None:
@@ -411,10 +431,64 @@ class TestStatisticRows:
             datetime(2026, 9, 21, 3, tzinfo=UTC): 248860.0,
         }
         with pytest.raises(ValueError, match="backwards"):
-            statistic_rows(registers, Resume(offset=0.0, after=None))
+            statistic_rows(registers, anchor(0.0))
 
     def test_an_empty_mapping_yields_no_rows(self) -> None:
-        assert statistic_rows({}, Resume(offset=0.0, after=None)) == []
+        assert statistic_rows({}, anchor(0.0)) == []
+
+
+class TestTariff:
+    """What a kWh costs once the bill's other terms are added."""
+
+    def test_reproduces_the_worked_se3_example(self) -> None:
+        """Spot 139.37 + påslag 5.00 + energiskatt 42.80 öre, then 25% VAT.
+
+        The published energy tax of 53.50 öre/kWh includes VAT; 42.80 is the
+        same figure without it, which is what this field takes.
+        """
+        tariff = Tariff(markup=0.05, tax=0.4280, vat=0.25)
+        assert tariff.price(1.3937) == pytest.approx(2.3396, abs=5e-5)
+
+    def test_spot_alone_when_nothing_is_configured(self) -> None:
+        assert Tariff().price(1.3937) == pytest.approx(1.3937)
+
+    def test_export_carries_no_tax_or_vat(self) -> None:
+        """A household selling surplus charges neither."""
+        assert Tariff(markup=0.02).price(1.0) == pytest.approx(1.02)
+
+
+class TestCostRows:
+    """Accumulating the cost of each hour's consumption."""
+
+    def test_costs_each_hour_at_its_own_price(self) -> None:
+        registers = {H(2): 100.0, H(3): 102.0, H(4): 103.0}
+        prices = {H(3): 1.0, H(4): 2.0}
+
+        rows = cost_rows(registers, prices, Tariff(), 0.0)
+
+        # 2 kWh at 1.00, then 1 kWh at 2.00, accumulating.
+        assert [sum_of(row) for row in rows] == [pytest.approx(2.0), pytest.approx(4.0)]
+
+    def test_the_first_hour_of_a_batch_is_not_costed(self) -> None:
+        """It has no predecessor, so its own consumption is unknown here."""
+        registers = {H(2): 100.0, H(3): 102.0}
+        rows = cost_rows(registers, {H(2): 1.0, H(3): 1.0}, Tariff(), 0.0)
+        assert [row["start"] for row in rows] == [H(3)]
+
+    def test_continues_from_the_previous_total(self) -> None:
+        registers = {H(2): 100.0, H(3): 101.0}
+        [row] = cost_rows(registers, {H(3): 1.0}, Tariff(), 7.5)
+        assert sum_of(row) == pytest.approx(8.5)
+
+    def test_an_hour_without_a_price_is_skipped(self) -> None:
+        """Pricing it at zero would undercount while looking deliberate."""
+        registers = {H(2): 100.0, H(3): 102.0, H(4): 103.0}
+        rows = cost_rows(registers, {H(4): 2.0}, Tariff(), 0.0)
+        assert [row["start"] for row in rows] == [H(4)]
+        assert sum_of(rows[0]) == pytest.approx(2.0)
+
+    def test_no_prices_at_all_yields_nothing(self) -> None:
+        assert cost_rows({H(2): 1.0, H(3): 2.0}, {}, Tariff(), 0.0) == []
 
 
 # The capture is from 2026-09-21 02:55-03:05 CEST, which is 00:55-01:05 UTC.
@@ -437,7 +511,9 @@ class TestResumePoint:
     async def test_reads_back_our_own_last_row(
         self, recorder_mock: None, hass: HomeAssistant, meters: list[Item]
     ) -> None:
-        metadata = statistic_metadata(hass, meters[0], "energy_import")
+        metadata = statistic_metadata(
+            meters[0], "energy_import", "Imported electricity"
+        )
         async_add_external_statistics(
             hass,
             metadata,
@@ -590,7 +666,7 @@ class TestHistoryImporter:
         for key in HISTORY_REGISTERS:
             async_add_external_statistics(
                 hass,
-                statistic_metadata(hass, meters[0], key),
+                statistic_metadata(meters[0], key, HISTORY_NAMES[key]),
                 [StatisticData(start=CAPTURE_HOURS[1], state=100.0, sum=0.0)],
             )
         await async_wait_recording_done(hass)
@@ -608,6 +684,197 @@ class TestHistoryImporterFailures:
     Not frozen in time: none of these reach the capture, and the class-level
     freeze collides with the ``caplog`` fixture.
     """
+
+    async def test_cost_is_imported_when_a_price_entity_is_configured(
+        self,
+        recorder_mock: None,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+        meters: list[Item],
+        phasedata: object,
+    ) -> None:
+        """End to end, including that the recorder's prices are read correctly.
+
+        `statistics_during_period` hands `start` back in seconds, the same trap
+        `async_resume_point` fell into; a mis-read here silently prices every
+        hour at nothing.
+        """
+        async_add_external_statistics(
+            hass,
+            StatisticMetaData(
+                mean_type=StatisticMeanType.ARITHMETIC,
+                has_sum=False,
+                name="Spot",
+                source=DOMAIN,
+                statistic_id=f"{DOMAIN}:spot",
+                unit_of_measurement="SEK/kWh",
+                unit_class=None,
+            ),
+            [StatisticData(start=CAPTURE_HOURS[1], mean=2.0)],
+        )
+        await async_wait_recording_done(hass)
+
+        # Saving options reloads the entry, which sets the integration up again
+        # and so needs the client patched a second time.
+        with patch("custom_components.perific.EnegicClient", return_value=mock_client):
+            hass.config_entries.async_update_entry(
+                setup_integration,
+                options={
+                    CONF_PRICE_ENTITY: f"{DOMAIN}:spot",
+                    CONF_PRICE_MARKUP: 0.0,
+                    CONF_ENERGY_TAX: 0.0,
+                    CONF_VAT_PERCENT: 0.0,
+                },
+            )
+            await hass.async_block_till_done()
+        mock_client.async_get_phase_data.return_value = parse_phase_data(phasedata)
+
+        await HistoryImporter(hass, setup_integration).async_import_since(
+            CAPTURE_HOURS[0]
+        )
+        await async_wait_recording_done(hass)
+
+        meter = setup_integration.runtime_data.meters[0]
+        resume = await async_resume_point(
+            hass, cost_statistic_id(meter.item_id, "energy_import")
+        )
+        # The capture's second hour consumed 248880.710 - 248879.629 kWh, at 2.00.
+        assert resume is not None
+        assert resume.total == pytest.approx((248880.710 - 248879.629) * 2.0)
+
+    async def test_cost_reaches_back_over_energy_already_stored(
+        self,
+        recorder_mock: None,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+        meters: list[Item],
+    ) -> None:
+        """Cost walks the stored series, not the window this run fetched.
+
+        Tying it to the fetch would mean nothing was ever costed: a steady-state
+        run covers one hour, and an hour needs its predecessor to difference
+        against. It would also strand every hour imported before a price entity
+        was configured.
+        """
+        meter = meters[0]
+        hours = [CAPTURE_HOURS[0] + i * timedelta(hours=1) for i in range(4)]
+        async_add_external_statistics(
+            hass,
+            statistic_metadata(meter, "energy_import", "Imported"),
+            [
+                StatisticData(start=hour, state=100.0 + i, sum=float(i))
+                for i, hour in enumerate(hours)
+            ],
+        )
+        async_add_external_statistics(
+            hass,
+            StatisticMetaData(
+                mean_type=StatisticMeanType.ARITHMETIC,
+                has_sum=False,
+                name="Spot",
+                source=DOMAIN,
+                statistic_id=f"{DOMAIN}:spot",
+                unit_of_measurement="SEK/kWh",
+                unit_class=None,
+            ),
+            [StatisticData(start=hour, mean=2.0) for hour in hours],
+        )
+        await async_wait_recording_done(hass)
+
+        with patch("custom_components.perific.EnegicClient", return_value=mock_client):
+            hass.config_entries.async_update_entry(
+                setup_integration, options={CONF_PRICE_ENTITY: f"{DOMAIN}:spot"}
+            )
+            await hass.async_block_till_done()
+        # Nothing new to fetch, so the energy walk does nothing at all.
+        mock_client.async_get_phase_data.return_value = []
+
+        await HistoryImporter(hass, setup_integration).async_run()
+        await async_wait_recording_done(hass)
+
+        resume = await async_resume_point(
+            hass, cost_statistic_id(meter.item_id, "energy_import")
+        )
+        # Three differenced hours, 1 kWh each, at 2.00.
+        assert resume is not None
+        assert resume.total == pytest.approx(6.0)
+        assert resume.after == hours[-1]
+
+    async def test_costing_twice_does_not_count_an_hour_twice(
+        self,
+        recorder_mock: None,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+        meters: list[Item],
+    ) -> None:
+        """The last costed hour is the next run's predecessor, not its output."""
+        meter = meters[0]
+        hours = [CAPTURE_HOURS[0] + i * timedelta(hours=1) for i in range(3)]
+        async_add_external_statistics(
+            hass,
+            statistic_metadata(meter, "energy_import", "Imported"),
+            [
+                StatisticData(start=hour, state=100.0 + i, sum=float(i))
+                for i, hour in enumerate(hours)
+            ],
+        )
+        async_add_external_statistics(
+            hass,
+            StatisticMetaData(
+                mean_type=StatisticMeanType.ARITHMETIC,
+                has_sum=False,
+                name="Spot",
+                source=DOMAIN,
+                statistic_id=f"{DOMAIN}:spot",
+                unit_of_measurement="SEK/kWh",
+                unit_class=None,
+            ),
+            [StatisticData(start=hour, mean=2.0) for hour in hours],
+        )
+        await async_wait_recording_done(hass)
+        with patch("custom_components.perific.EnegicClient", return_value=mock_client):
+            hass.config_entries.async_update_entry(
+                setup_integration, options={CONF_PRICE_ENTITY: f"{DOMAIN}:spot"}
+            )
+            await hass.async_block_till_done()
+        mock_client.async_get_phase_data.return_value = []
+
+        importer = HistoryImporter(hass, setup_integration)
+        await importer.async_run()
+        await async_wait_recording_done(hass)
+        cost_id = cost_statistic_id(meter.item_id, "energy_import")
+        first = await async_resume_point(hass, cost_id)
+
+        await importer.async_run()
+        await async_wait_recording_done(hass)
+
+        assert await async_resume_point(hass, cost_id) == first
+
+    async def test_no_cost_without_a_price_entity(
+        self,
+        recorder_mock: None,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+        phasedata: object,
+    ) -> None:
+        mock_client.async_get_phase_data.return_value = parse_phase_data(phasedata)
+
+        await HistoryImporter(hass, setup_integration).async_import_since(
+            CAPTURE_HOURS[0]
+        )
+        await async_wait_recording_done(hass)
+
+        meter = setup_integration.runtime_data.meters[0]
+        assert (
+            await async_resume_point(
+                hass, cost_statistic_id(meter.item_id, "energy_import")
+            )
+            is None
+        )
 
     async def test_the_walk_never_asks_for_a_sub_minute_window(
         self,

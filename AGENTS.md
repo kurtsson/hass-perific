@@ -91,9 +91,17 @@ them — with only a log warning — if the typing is wrong.
 A missing statistics graph on an entity means the typing was rejected. Read the log rather than
 guessing.
 
-**No net-energy sensor.** Net (import − export) isn't monotonic, so it can never be
-`TOTAL_INCREASING`. The Energy dashboard computes net from import and export itself. See
+**No energy sensors at all, net or otherwise.** The hourly energy series is imported into long-term
+statistics from `/getphasedata` — see `history.py` — so an entity accumulating the same registers
+from polling would build a second, gappier copy of it under a name a user cannot tell apart in the
+statistics picker. Net would be worse still: it isn't monotonic, so it could never be
+`TOTAL_INCREASING` at all, and the Energy dashboard derives net from import and export itself. See
 `CONTEXT.md` — both community reference integrations get this wrong.
+
+**The `energy_import` / `energy_export` strings stay in `strings.json` and the translations even
+though no entity uses them.** They are what names the imported statistics, which have no entity to
+take a translated name from; `history.async_register_names` reads them by those exact keys. Deleting
+them leaves the Energy dashboard showing English names beside Swedish sensors.
 
 **Raise `ConfigEntryAuthFailed` directly**, never wrapped in `UpdateFailed` — but only once a
 rejection has repeated. Wrapped forever, HA's reauth flow never triggers and the integration just

@@ -62,6 +62,26 @@ HISTORY_MIN_WINDOW: Final = timedelta(minutes=1)
 # finished hour unwritten for up to an hour.
 HISTORY_RUN_AT_MINUTE: Final = 5
 
+# Cost is imported as its own series per register, because the Energy
+# dashboard's own cost sensor refuses to work against an external statistic —
+# `energy/data.py` rejects a price entity outright when `stat_energy_from` is
+# not an entity id, and points at `stat_cost` instead.
+COST_KEYS: Final = {
+    "energy_import": "energy_import_cost",
+    "energy_export": "energy_export_compensation",
+}
+COST_NAMES: Final = {
+    "energy_import_cost": "Imported electricity cost",
+    "energy_export_compensation": "Exported electricity compensation",
+}
+
+CONF_PRICE_ENTITY: Final = "price_entity"
+CONF_PRICE_MARKUP: Final = "price_markup"
+CONF_ENERGY_TAX: Final = "energy_tax"
+CONF_VAT_PERCENT: Final = "vat_percent"
+CONF_EXPORT_PRICE_ENTITY: Final = "export_price_entity"
+CONF_EXPORT_PREMIUM: Final = "export_premium"
+
 SERVICE_IMPORT_HISTORY: Final = "import_history"
 ATTR_START: Final = "start"
 

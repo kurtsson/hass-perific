@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -24,14 +25,23 @@ from homeassistant.components.recorder.models import (
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
+    statistics_during_period,
 )
 from homeassistant.const import UnitOfEnergy
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.recorder import get_instance
+from homeassistant.helpers.translation import async_get_translations
 from homeassistant.util import dt as dt_util
 
 from .api import PerificError
 from .const import (
+    CONF_ENERGY_TAX,
+    CONF_EXPORT_PREMIUM,
+    CONF_EXPORT_PRICE_ENTITY,
+    CONF_PRICE_ENTITY,
+    CONF_PRICE_MARKUP,
+    CONF_VAT_PERCENT,
+    COST_KEYS,
+    COST_NAMES,
     DOMAIN,
     HISTORY_CHUNK,
     HISTORY_MAX_CHUNKS,
@@ -53,6 +63,9 @@ HOUR = timedelta(hours=1)
 # kWh's unit class, as STATISTIC_UNIT_TO_UNIT_CONVERTER reports it on both the
 # deployment target and the floor in hacs.json.
 ENERGY_UNIT_CLASS = "energy"
+
+# The fewest stored hours that can produce a cost: one to difference against.
+_PAIR = 2
 
 
 def localise(
@@ -123,27 +136,25 @@ def statistic_id(item_id: int, key: str) -> str:
     return f"{DOMAIN}:{item_id}_{key}"
 
 
-def register_name(hass: HomeAssistant, meter: Item, key: str) -> str:
-    """Name the register, translated where that is possible.
+async def async_register_names(hass: HomeAssistant) -> dict[str, str]:
+    """Read the registers' display names, in the instance's own language.
 
     An external statistic has no entity, so Home Assistant shows the plain
-    string stored beside it and offers no way to translate that. Borrowing the
-    matching sensor's already-resolved name is what keeps the two from sitting
-    in different languages in the same picker. Metadata is rewritten on every
-    import, so a rename or a language change is picked up within the hour.
-
-    Falls back to English once those sensors are retired, which is the point at
-    which nothing translated is left to borrow.
+    string stored beside it and offers no way to translate that. These names are
+    therefore read straight out of the integration's own translation files, by
+    the same keys the sensors would have used. Metadata is rewritten on every
+    import, so a change of language is picked up within the hour.
     """
-    registry = er.async_get(hass)
-    entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{meter.item_id}_{key}")
-    entry = registry.async_get(entity_id) if entity_id else None
-    if entry and (name := entry.name or entry.original_name):
-        return str(name)
-    return HISTORY_NAMES[key]
+    translations = await async_get_translations(
+        hass, hass.config.language, "entity", {DOMAIN}
+    )
+    return {
+        key: translations.get(f"component.{DOMAIN}.entity.sensor.{key}.name") or default
+        for key, default in (HISTORY_NAMES | COST_NAMES).items()
+    }
 
 
-def statistic_metadata(hass: HomeAssistant, meter: Item, key: str) -> StatisticMetaData:
+def statistic_metadata(meter: Item, key: str, name: str) -> StatisticMetaData:
     """Describe one register's series to the recorder.
 
     ``mean_type`` and ``unit_class`` are passed explicitly: they are accepted at
@@ -158,7 +169,7 @@ def statistic_metadata(hass: HomeAssistant, meter: Item, key: str) -> StatisticM
     return StatisticMetaData(
         mean_type=StatisticMeanType.NONE,
         has_sum=True,
-        name=f"{device} {register_name(hass, meter, key)}",
+        name=f"{device} {name}",
         source=DOMAIN,
         statistic_id=statistic_id(meter.item_id, key),
         unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
@@ -178,15 +189,45 @@ def registered_at(item_id: int) -> datetime:
 
 @dataclass(frozen=True, slots=True)
 class Resume:
-    """Where the last run left off.
+    """Where the last run left off, as the last written row states it.
 
-    ``offset`` is the constant between a row's register and its cumulative sum.
-    Reading it back off our own last row is what makes a re-import of an hour
-    reproduce the value already stored.
+    Both halves are kept rather than just their difference: the energy series
+    needs the ``offset``, and the cost series needs ``total`` to carry on
+    accumulating from.
     """
 
-    offset: float
+    state: float
+    total: float
     after: datetime | None
+
+    @property
+    def offset(self) -> float:
+        """The constant between a row's register and its cumulative sum.
+
+        Reading it back off our own last row is what makes a re-import of an
+        hour reproduce the value already stored.
+        """
+        return self.total - self.state
+
+
+@dataclass(frozen=True, slots=True)
+class Tariff:
+    """What one kWh actually costs on top of the spot price.
+
+    Spot alone is not what anyone pays. The Swedish shape is spot plus the
+    supplier's markup plus energy tax, with VAT applied to the sum; the same
+    three terms describe most metered tariffs. Selling is the same arithmetic
+    with the tax and VAT left at zero, since a household exporting surplus
+    charges neither.
+    """
+
+    markup: float = 0.0
+    tax: float = 0.0
+    vat: float = 0.0
+
+    def price(self, spot: float) -> float:
+        """Deliver the price of one kWh at this spot price."""
+        return (spot + self.markup + self.tax) * (1.0 + self.vat)
 
 
 def statistic_rows(
@@ -207,6 +248,114 @@ def statistic_rows(
         rows.append(
             StatisticData(start=hour, state=register, sum=register + resume.offset)
         )
+    return rows
+
+
+def cost_statistic_id(item_id: int, key: str) -> str:
+    """Build the external statistic id carrying one register's cost."""
+    return f"{DOMAIN}:{item_id}_{COST_KEYS[key]}"
+
+
+def cost_metadata(meter: Item, key: str, name: str, currency: str) -> StatisticMetaData:
+    """Describe one register's cost series.
+
+    ``unit_class`` is None: money has no unit converter, which is also how Home
+    Assistant's own cost statistics are stored.
+    """
+    device = meter.name or meter.system_name or "Perific"
+    return StatisticMetaData(
+        mean_type=StatisticMeanType.NONE,
+        has_sum=True,
+        name=f"{device} {name}",
+        source=DOMAIN,
+        statistic_id=cost_statistic_id(meter.item_id, key),
+        unit_of_measurement=currency,
+        unit_class=None,
+    )
+
+
+async def async_hourly_prices(
+    hass: HomeAssistant, statistic_id: str, window: tuple[datetime, datetime]
+) -> dict[datetime, float]:
+    """Read the spot price for each hour in the window.
+
+    Prices come from the entity's own recorded statistics, so this reaches only
+    as far back as the recorder saw that sensor.
+
+    A price is a measurement, so the recorder keeps a mean for it rather than a
+    sum, and the mean over an hour is exactly the hour's price.
+    """
+    start, end = window
+
+    def read() -> Any:
+        return statistics_during_period(
+            hass, start, end, {statistic_id}, "hour", None, {"mean"}
+        )
+
+    result = await get_instance(hass).async_add_executor_job(read)
+
+    prices: dict[datetime, float] = {}
+    for row in result.get(statistic_id) or []:
+        mean = row.get("mean")
+        if not isinstance(mean, (int, float)):
+            continue
+        when = datetime.fromtimestamp(float(row["start"]), UTC)
+        prices[when.replace(minute=0, second=0, microsecond=0)] = float(mean)
+    return prices
+
+
+async def async_stored_hours(
+    hass: HomeAssistant, statistic_id: str, window: tuple[datetime, datetime]
+) -> dict[datetime, float]:
+    """Read the cumulative sums already written for a statistic, by hour.
+
+    Cost is worked out from what the energy series says rather than from the
+    readings that produced it, so that it can walk at its own pace: an hour of
+    energy fetched weeks ago is costed the same way as one fetched a minute ago.
+    """
+    start, end = window
+
+    def read() -> Any:
+        return statistics_during_period(
+            hass, start, end, {statistic_id}, "hour", None, {"sum"}
+        )
+
+    result = await get_instance(hass).async_add_executor_job(read)
+
+    hours: dict[datetime, float] = {}
+    for row in result.get(statistic_id) or []:
+        total = row.get("sum")
+        if not isinstance(total, (int, float)):
+            continue
+        when = datetime.fromtimestamp(float(row["start"]), UTC)
+        hours[when.replace(minute=0, second=0, microsecond=0)] = float(total)
+    return hours
+
+
+def cost_rows(
+    registers: dict[datetime, float],
+    prices: dict[datetime, float],
+    tariff: Tariff,
+    running: float,
+) -> list[StatisticData]:
+    """Accumulate the cost of each hour's consumption.
+
+    An hour costs its own consumption, so it needs the register before it as
+    well as its own — which is why the first hour of a batch produces nothing.
+    That hour is either the one the previous run already costed, or the very
+    first hour of the series, whose consumption is unknown either way.
+
+    An hour with no recorded price is skipped rather than costed at zero. Its
+    energy then goes uncosted, which undercounts; pricing it at nothing would
+    do the same while looking deliberate.
+    """
+    rows: list[StatisticData] = []
+    for previous, hour in pairwise(sorted(registers)):
+        spot = prices.get(hour)
+        if spot is None:
+            continue
+        running += (registers[hour] - registers[previous]) * tariff.price(spot)
+        rows.append(StatisticData(start=hour, state=running, sum=running))
     return rows
 
 
@@ -236,7 +385,8 @@ async def async_resume_point(hass: HomeAssistant, statistic_id: str) -> Resume |
     # in milliseconds, which is the easy way to be an hour or fifty years out.
     when = datetime.fromtimestamp(float(row["start"]), UTC)
     return Resume(
-        offset=float(total) - float(state),
+        state=float(state),
+        total=float(total),
         after=when.replace(minute=0, second=0, microsecond=0),
     )
 
@@ -263,13 +413,14 @@ class HistoryImporter:
             return 0
         try:
             return await self.async_import_since(None)
-        except PerificError, ValueError:
+        except (PerificError, ValueError):
             _LOGGER.exception("History import failed")
             return 0
 
     async def async_import_since(self, start: datetime | None) -> int:
         """Import from ``start``, or from wherever the series left off."""
         written = 0
+        names = await async_register_names(self.hass)
 
         for meter in self.entry.runtime_data.meters:
             zone = meter.time_zone or str(self.hass.config.time_zone)
@@ -300,7 +451,14 @@ class HistoryImporter:
                     else registered_at(meter.item_id)
                 )
 
-            written += await self._async_walk(meter, zone, cursor, resumes)
+            written += await self._async_walk(meter, zone, cursor, resumes, names)
+
+            # After the energy, and from the stored series rather than from
+            # this run's window: cost has its own starting point and is usually
+            # further behind, because prices only reach back as far as the
+            # recorder saw the price entity.
+            for key in HISTORY_REGISTERS:
+                written += await self._async_import_cost(meter, key, names)
 
         return written
 
@@ -310,6 +468,7 @@ class HistoryImporter:
         zone: str,
         cursor: datetime,
         resumes: dict[str, Resume | None],
+        names: dict[str, str],
     ) -> int:
         """Import forward from the cursor, one request per chunk.
 
@@ -348,12 +507,13 @@ class HistoryImporter:
                 resume = resumes[key]
                 if resume is None:
                     # First ever row for this register: start the series at zero.
-                    resume = Resume(offset=-registers[min(registers)], after=None)
+                    first = registers[min(registers)]
+                    resume = Resume(state=first, total=0.0, after=None)
                     resumes[key] = resume
 
                 rows = statistic_rows(registers, resume)
                 async_add_external_statistics(
-                    self.hass, statistic_metadata(self.hass, meter, key), rows
+                    self.hass, statistic_metadata(meter, key, names[key]), rows
                 )
                 written += len(rows)
                 _LOGGER.debug(
@@ -367,3 +527,105 @@ class HistoryImporter:
             cursor = window[1]
 
         return written
+
+    def _tariff(self, key: str) -> tuple[str | None, Tariff]:
+        """Resolve the price entity and tariff for one register.
+
+        Export carries neither energy tax nor VAT: a household selling surplus
+        charges neither, so only the contract's premium sits on top of spot.
+        """
+        options = self.entry.options
+        if key == "energy_export":
+            entity_id = options.get(CONF_EXPORT_PRICE_ENTITY) or options.get(
+                CONF_PRICE_ENTITY
+            )
+            return entity_id, Tariff(
+                markup=float(options.get(CONF_EXPORT_PREMIUM, 0.0))
+            )
+        return options.get(CONF_PRICE_ENTITY), Tariff(
+            markup=float(options.get(CONF_PRICE_MARKUP, 0.0)),
+            tax=float(options.get(CONF_ENERGY_TAX, 0.0)),
+            vat=float(options.get(CONF_VAT_PERCENT, 0.0)) / 100.0,
+        )
+
+    async def _async_import_cost(
+        self, meter: Item, key: str, names: dict[str, str]
+    ) -> int:
+        """Cost every stored hour not costed yet, if a price entity is set.
+
+        Home Assistant will not compute this itself: `energy/data.py` rejects a
+        price entity outright when the energy source is an external statistic,
+        and directs you to `stat_cost` instead. This is what fills it.
+
+        Driven by the stored energy series rather than by whatever this run
+        fetched. Costing an hour needs the hour before it to difference
+        against, and a steady-state fetch covers a single hour — so tying the
+        two together would mean no cost was ever written, and none of the
+        history already stored could be reached.
+        """
+        price_entity, tariff = self._tariff(key)
+        if not price_entity:
+            _LOGGER.debug("No price entity configured for %s; not costing it", key)
+            return 0
+
+        cost_id = cost_statistic_id(meter.item_id, key)
+        resume = await async_resume_point(self.hass, cost_id)
+        # Start *at* the last costed hour, not before it. That hour becomes the
+        # predecessor the next one is differenced against, and is not itself
+        # rewritten — `resume.total` already counts it, so re-costing it would
+        # add the same hour twice on every run. From the epoch when there is
+        # nothing yet, which walks the whole stored series once.
+        start = resume.after if resume and resume.after else registered_at(0)
+        window = (start, dt_util.utcnow())
+
+        sums = await async_stored_hours(
+            self.hass, statistic_id(meter.item_id, key), window
+        )
+        if len(sums) < _PAIR:
+            # One hour cannot be differenced against anything.
+            _LOGGER.debug(
+                "Only %d stored hour(s) of %s since %s; nothing to cost yet",
+                len(sums),
+                key,
+                start.isoformat(),
+            )
+            return 0
+
+        prices = await async_hourly_prices(self.hass, price_entity, window)
+        if not prices:
+            # The recorder only holds prices from when it first saw the entity,
+            # so energy older than that is genuinely uncostable.
+            _LOGGER.debug(
+                "No recorded prices from %s since %s; cannot cost %s",
+                price_entity,
+                start.isoformat(),
+                key,
+            )
+            return 0
+
+        rows = cost_rows(sums, prices, tariff, resume.total if resume else 0.0)
+        if not rows:
+            _LOGGER.debug(
+                "%d stored hour(s) and %d price(s) for %s, but no hour has both",
+                len(sums),
+                len(prices),
+                key,
+            )
+            return 0
+
+        cost_key = COST_KEYS[key]
+        async_add_external_statistics(
+            self.hass,
+            cost_metadata(
+                meter, key, names[cost_key], self.hass.config.currency or "EUR"
+            ),
+            rows,
+        )
+        _LOGGER.debug(
+            "Costed %d hour(s) of %s, %s .. %s",
+            len(rows),
+            cost_id,
+            rows[0]["start"].isoformat(),
+            rows[-1]["start"].isoformat(),
+        )
+        return len(rows)

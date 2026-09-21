@@ -33,12 +33,24 @@
   "options": {
     "step": {
       "init": {
-        "description": "How often to poll the Perific API. The energy registers only advance once a minute; the real-time bucket updates every 10 seconds, so a shorter interval buys fresher power and current readings and nothing else. The API's rate limits are undocumented, so lower this gradually.",
+        "description": "**Polling** covers the live power, current and voltage sensors only. The real-time readings update every 10 seconds, so a shorter interval buys fresher values and nothing else; the API's rate limits are undocumented, so lower it gradually. Energy is unaffected — it is imported from the Perific cloud rather than accumulated from polling.\n\n**Cost** is optional, and exists because that import is what makes it necessary: Home Assistant refuses to price an energy source it did not record itself, so this integration works the price out and writes its own cost series for the Energy dashboard to use. Leave the price entity empty and none of it happens.\n\nBuying and selling are priced differently. What you buy costs `(spot + markup + energy tax) × VAT`. What you sell earns `spot + export premium`, with no tax and no VAT, because a household selling surplus charges neither.",
         "data": {
-          "scan_interval": "Poll interval"
+          "scan_interval": "Poll interval",
+          "price_entity": "Spot price entity",
+          "price_markup": "Supplier markup",
+          "energy_tax": "Energy tax",
+          "vat_percent": "VAT",
+          "export_price_entity": "Spot price entity for export",
+          "export_premium": "Export premium"
         },
         "data_description": {
-          "scan_interval": "Seconds between polls."
+          "scan_interval": "Seconds between polls.",
+          "price_entity": "A sensor giving the spot price per kWh, excluding VAT — a Nord Pool price sensor, for instance. Leave it empty and no cost is imported at all. Prices can only be read as far back as this sensor's own history goes, so cost will start later than the energy it prices.",
+          "price_markup": "Your supplier's markup per kWh on electricity you buy, excluding VAT. Any other per-kWh charge, such as grid transfer, belongs here too. Not applied to what you sell.",
+          "energy_tax": "Energy tax per kWh on electricity you buy, excluding VAT. The published Swedish figure of 53.50 öre/kWh includes VAT, so the number to enter is 42.80 öre — that is 0.4280. Not applied to what you sell.",
+          "vat_percent": "Applied to the spot price, the markup and the tax together, for electricity you buy. 25 in Sweden. Not applied to what you sell.",
+          "export_price_entity": "Leave empty unless you sell at a different spot price than you buy — the entity above is then used for both. This only shares the price: what you sell is still earned at spot plus the premium below, with no markup, no tax and no VAT.",
+          "export_premium": "Added to the spot price per kWh for what you sell. This is the only adjustment made to export; the markup, energy tax and VAT above apply to what you buy."
         }
       }
     }
@@ -52,10 +64,16 @@
   "entity": {
     "sensor": {
       "energy_import": {
-        "name": "Energy imported"
+        "name": "Imported electricity"
       },
       "energy_export": {
-        "name": "Energy exported"
+        "name": "Exported electricity"
+      },
+      "energy_import_cost": {
+        "name": "Imported electricity cost"
+      },
+      "energy_export_compensation": {
+        "name": "Exported electricity compensation"
       },
       "power_import": {
         "name": "Power imported"

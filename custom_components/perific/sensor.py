@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from homeassistant.components.sensor import (
-    RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
@@ -22,7 +21,6 @@ from homeassistant.const import (
     EntityCategory,
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
-    UnitOfEnergy,
     UnitOfPower,
 )
 from homeassistant.core import callback
@@ -68,16 +66,6 @@ class PerificSensorEntityDescription(SensorEntityDescription):
     """Describes a sensor, including where in a packet its value comes from."""
 
     value_fn: Callable[[ItemPackets], PacketValue]
-
-
-def _energy_import(packets: ItemPackets) -> float | None:
-    # PhaseMinute, not PhaseRealTime: the real-time bucket carries no energy
-    # registers at all.
-    return packets.minute.data.energy_import if packets.minute else None
-
-
-def _energy_export(packets: ItemPackets) -> float | None:
-    return packets.minute.data.energy_export if packets.minute else None
 
 
 def _phase_powers(packets: ItemPackets) -> list[float] | None:
@@ -180,23 +168,11 @@ _PHASE_SENSORS: tuple[PerificSensorEntityDescription, ...] = tuple(
 )
 
 
+# No cumulative-energy sensors. The hourly energy series is imported straight
+# into long-term statistics from the vendor's own record — see history.py — so
+# an entity accumulating the same registers from polling would only add a second,
+# gappier copy of it under a confusingly similar name.
 SENSORS: tuple[PerificSensorEntityDescription, ...] = (
-    PerificSensorEntityDescription(
-        key="energy_import",
-        translation_key="energy_import",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        value_fn=_energy_import,
-    ),
-    PerificSensorEntityDescription(
-        key="energy_export",
-        translation_key="energy_export",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        value_fn=_energy_export,
-    ),
     PerificSensorEntityDescription(
         key="power_import",
         translation_key="power_import",
@@ -244,7 +220,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             *(
-                _build(coordinator, meter, description)
+                PerificPacketSensor(coordinator, meter, description)
                 for meter in coordinator.meters
                 for description in SENSORS
             ),
@@ -254,17 +230,6 @@ async def async_setup_entry(
             ),
         ]
     )
-
-
-def _build(
-    coordinator: PerificCoordinator,
-    meter: Item,
-    description: PerificSensorEntityDescription,
-) -> PerificPacketSensor:
-    """Pick the entity class a description needs."""
-    if description.state_class is SensorStateClass.TOTAL_INCREASING:
-        return PerificCounterSensor(coordinator, meter, description)
-    return PerificPacketSensor(coordinator, meter, description)
 
 
 class PerificSensor(CoordinatorEntity[PerificCoordinator], SensorEntity):
@@ -333,70 +298,6 @@ class PerificPacketSensor(PerificSensor):
         if packets is None:
             return None
         return self.entity_description.value_fn(packets)
-
-
-class PerificCounterSensor(PerificPacketSensor, RestoreSensor):
-    """A cumulative register, guarded against being published as having reset."""
-
-    def __init__(
-        self,
-        coordinator: PerificCoordinator,
-        meter: Item,
-        description: PerificSensorEntityDescription,
-    ) -> None:
-        """Start with no baseline; one is restored or taken on the first reading."""
-        super().__init__(coordinator, meter, description)
-        self._last_counter: float | None = None
-        self._unconfirmed: float | None = None
-
-    async def async_added_to_hass(self) -> None:
-        """Seed the baseline from the last published value before reading again.
-
-        Without this the first reading after a restart becomes the baseline, so a
-        register that fell while Home Assistant was down would be published as a
-        meter reset instead of being held.
-        """
-        restored = await self.async_get_last_sensor_data()
-        if restored is not None and isinstance(restored.native_value, int | float):
-            self._last_counter = float(restored.native_value)
-        await super().async_added_to_hass()
-
-    def _next_value(self) -> float | None:
-        """Apply the monotonicity guard."""
-        value = self._read()
-        if value is None:
-            # The baseline survives the gap, so a stale packet on recovery is still
-            # measured against the last real reading.
-            return None
-        if not isinstance(value, int | float):
-            return None
-
-        # A flat register is normal — it means nothing flowed that way, which happens
-        # for hours whenever the house is exporting. Only a fall is suspect.
-        if self._last_counter is None or value >= self._last_counter:
-            self._unconfirmed = None
-            self._last_counter = value
-            return value
-
-        if self._unconfirmed is not None:
-            # Two polls running below the baseline. A re-served stale packet does not
-            # persist; a replaced meter does, and it counts up from its own new base
-            # rather than down, so the second reading is not expected to be lower.
-            self._unconfirmed = None
-            self._last_counter = value
-            return value
-
-        # Home Assistant reads a fall in a TOTAL_INCREASING counter as a meter reset
-        # and books the whole new value as one period's consumption, which is far
-        # harder to repair than a held sample is to lose.
-        _LOGGER.warning(
-            "%s went backwards, %s -> %s; holding until a second reading agrees",
-            self.entity_id,
-            self._last_counter,
-            value,
-        )
-        self._unconfirmed = value
-        return self._last_counter
 
 
 class PerificStatusSensor(PerificSensor):

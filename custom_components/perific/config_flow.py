@@ -21,6 +21,8 @@ from homeassistant.const import (
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -37,7 +39,13 @@ from .api import (
     PerificRateLimitError,
 )
 from .const import (
+    CONF_ENERGY_TAX,
+    CONF_EXPORT_PREMIUM,
+    CONF_EXPORT_PRICE_ENTITY,
+    CONF_PRICE_ENTITY,
+    CONF_PRICE_MARKUP,
     CONF_TOKEN_VALID_TO,
+    CONF_VAT_PERCENT,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_SCAN_INTERVAL,
@@ -70,6 +78,13 @@ STEP_USER_SCHEMA = vol.Schema(
 
 STEP_REAUTH_SCHEMA = vol.Schema({vol.Required(CONF_PASSWORD): _PASSWORD_FIELD})
 
+# Per-kWh money, in whatever currency the price entity reports. `step="any"`
+# rather than a figure: these are quoted in öre, so 42.80 öre/kWh is entered as
+# 0.4280, and the selector's minimum step is 0.001.
+_PRICE_FIELD = NumberSelector(
+    NumberSelectorConfig(min=0, step="any", mode=NumberSelectorMode.BOX)
+)
+
 OPTIONS_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(
@@ -83,7 +98,29 @@ OPTIONS_SCHEMA = vol.Schema(
                 )
             ),
             vol.Coerce(int),
-        )
+        ),
+        # Cost is optional: leave the price entity empty and no cost series is
+        # imported at all. Every amount below is per kWh and excludes VAT,
+        # which is applied once to their sum — the published Swedish energy tax
+        # of 53.50 öre/kWh includes it, so the figure to enter here is 42.80.
+        vol.Optional(CONF_PRICE_ENTITY): vol.Any(
+            EntitySelector(EntitySelectorConfig(domain="sensor")), None
+        ),
+        vol.Optional(CONF_PRICE_MARKUP, default=0.0): _PRICE_FIELD,
+        vol.Optional(CONF_ENERGY_TAX, default=0.0): _PRICE_FIELD,
+        vol.Optional(CONF_VAT_PERCENT, default=0.0): NumberSelector(
+            NumberSelectorConfig(
+                min=0,
+                max=100,
+                step=0.1,
+                unit_of_measurement="%",
+                mode=NumberSelectorMode.BOX,
+            )
+        ),
+        vol.Optional(CONF_EXPORT_PRICE_ENTITY): vol.Any(
+            EntitySelector(EntitySelectorConfig(domain="sensor")), None
+        ),
+        vol.Optional(CONF_EXPORT_PREMIUM, default=0.0): _PRICE_FIELD,
     }
 )
 
