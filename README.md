@@ -87,6 +87,19 @@ There is deliberately **no net-energy sensor**. Net can decrease, so it cannot b
 `TOTAL_INCREASING` counter without every downward move reading as a meter reset; the Energy
 dashboard derives net from import and export itself.
 
+Energy and cost are **not** in the table above, because they are not sensors. They are written
+straight into long-term statistics:
+
+| Statistic | Unit | Notes |
+|---|---|---|
+| Imported electricity | kWh | Hourly, imported from the Perific cloud. See [Energy history](#energy-history). |
+| Exported electricity | kWh | Hourly, same source. |
+| Imported electricity cost | your currency | Only if you configure a price entity. See [Cost](#cost). |
+| Exported electricity compensation | your currency | Same. |
+
+These have no entity, so they appear in the Energy dashboard and under **Developer Tools →
+Statistics** and nowhere else — not in History, not on a card, not in an automation.
+
 ## Requirements
 
 - Home Assistant 2026.5.1 or newer — the floor CI runs the whole suite against on every change
@@ -146,7 +159,11 @@ connection*, and fill it in like this:
 |---|---|---|
 | Energy imported from grid | **Imported electricity** | the imported history |
 | Energy exported to grid | **Exported electricity** | the imported history |
-| Type of power measurement | **Two sensors** | |
+| Cost tracking | *Use an entity tracking the total costs* | only if you set a price entity |
+| → Entity with the total costs | **Imported electricity cost** | the cost series |
+| Export compensation | *Use an entity tracking the total compensation* | likewise |
+| → Entity with the total compensation | **Exported electricity compensation** | the cost series |
+| Type of power measurement | *Two sensors* | |
 | → Power imported from grid | **Power imported** | the live sensor |
 | → Power exported to grid | **Power exported** | the live sensor |
 
@@ -162,8 +179,10 @@ import and export can both be non-zero at the same instant, and the other modes 
 sensor that is positive one way and negative the other. Home Assistant builds its own helper sensor
 from the pair and says so in the dialog.
 
-The same dialog holds the cost fields, and those need a word of their own — see [Cost](#cost)
-below.
+Cost and compensation are each two steps: choose the *total* option from the radio list, which then
+reveals the field to pick the statistic in. Leave both at *Do not track* if you have not set a price
+entity. The remaining radio options — *Use an entity with current price* and *Use a static price* —
+are **greyed out on purpose**; [Cost](#cost) explains why, and what to enter.
 
 ### Energy history
 
@@ -239,19 +258,13 @@ Two things this cannot be:
   therefore always uncosted for a while; the next run picks it up.
 
 The series appear within the hour, and then have to be pointed at from the Energy dashboard — this
-does not happen by itself. Reopen *Configure grid connection*, and for each of the two sources:
+does not happen by itself. Reopen *Configure grid connection* and fill in the two cost rows from
+[the table above](#energy-dashboard).
 
-| Field in the dialog | What to pick |
-|---|---|
-| Use an entity tracking the total costs | **Imported electricity cost** |
-| …and on the return-to-grid source | **Exported electricity compensation** |
-
-**The other cost options are greyed out, and that is expected.** *Use an entity with current price*
-and *Use a static price* are refused outright next to an imported statistic; the total-cost field is
-the only one Home Assistant will accept, and filling it makes the configuration valid again.
-
-Both entries carry a chart icon and say **Perific** underneath, like the energy ones — they are
-statistics, not entities, so they will not show up anywhere you can pick an entity.
+**The other cost options are greyed out there, and that is expected.** *Use an entity with current
+price* and *Use a static price* are refused outright next to an imported statistic — that is the
+rejection described above, showing up in the UI. The total-cost field is the only one Home Assistant
+will accept, and filling it makes the configuration valid again.
 
 To force a rebuild — after a long outage, or if you want to re-read a period — call
 **`perific.import_history`**. With no arguments it continues from wherever the last import stopped;
@@ -347,8 +360,8 @@ HA_CONFIG_DIR=/path/to/ha/config      # the host path bind-mounted to /config
 ```
 
 Success is judged by the config entry reaching the `loaded` state, which is language-independent.
-Entity IDs are not: they are built from translated names, so on a Swedish instance the import sensor
-is `sensor.<device>_inkopt_elektricitet`, with no `energy_import` anywhere in it.
+Entity IDs are not: they are built from translated names, so on a Swedish instance the imported
+power sensor is `sensor.<device>_inkopt_effekt`, with no `power_import` anywhere in it.
 
 Optionally `HA_DEPLOY_DIR` (default `$HOME/.perific-deploy` on the remote), `HA_VERIFY_ENTITY`, an
 extra substring that must appear in some entity ID (empty by default), and `RESTART_TIMEOUT`
