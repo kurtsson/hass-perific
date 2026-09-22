@@ -266,6 +266,20 @@ def legacy_config_entry() -> MockConfigEntry:
     )
 
 
+async def settle(hass: HomeAssistant) -> None:
+    """Run pending work until a history import has finished.
+
+    An import hops to the recorder's executor several times — once per resume
+    point, then again per series read — and a drain returns as soon as the loop
+    is idle, which it is while an executor job is still out. Each hop therefore
+    needs its own drain, and one or two leave the import half-run: the client
+    call a test is waiting for has not happened yet, and whatever is left
+    finishes after the recorder has been torn down.
+    """
+    for _ in range(6):
+        await hass.async_block_till_done()
+
+
 @pytest.fixture
 async def setup_integration(
     hass: HomeAssistant,
@@ -277,10 +291,5 @@ async def setup_integration(
     config_entry.add_to_hass(hass)
     with patch("custom_components.perific.EnegicClient", return_value=mock_client):
         await hass.config_entries.async_setup(config_entry.entry_id)
-        await hass.async_block_till_done()
-        # Setup starts a history import as a background task, and that task waits
-        # on the recorder's executor. One drain returns before the executor's
-        # callback has been scheduled back onto the loop, so tests that count
-        # client calls or patch the logger could still race it.
-        await hass.async_block_till_done()
+        await settle(hass)
     return config_entry

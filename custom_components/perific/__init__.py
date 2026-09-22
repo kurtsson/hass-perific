@@ -7,31 +7,38 @@ from typing import TYPE_CHECKING
 
 import voluptuous as vol
 from homeassistant.const import CONF_PASSWORD, CONF_TOKEN, CONF_USERNAME, Platform
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.core import SupportsResponse
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.util import dt as dt_util
+from homeassistant.util.yaml import dump
 
 from .api import EnegicClient, PerificAuthError, PerificError
 from .config_flow import PerificConfigFlow, token_entry_data
 from .const import (
     ATTR_START,
+    CONF_PRICE_ENTITY,
+    CONF_SOLAR_STATISTIC,
     CONF_TOKEN_VALID_TO,
     DOMAIN,
     HISTORY_RUN_AT_MINUTE,
+    SERVICE_GET_DASHBOARD,
     SERVICE_IMPORT_HISTORY,
 )
 from .coordinator import PerificCoordinator
-from .history import HistoryImporter
+from .dashboard import dashboard_config
+from .history import HistoryImporter, async_register_names
 
 if TYPE_CHECKING:
     from datetime import datetime
 
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import HomeAssistant, ServiceCall
+    from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse
     from homeassistant.helpers.typing import ConfigType
 
+    from .api import Item
     from .coordinator import PerificConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
@@ -65,6 +72,43 @@ async def async_setup(hass: HomeAssistant, _config: ConfigType) -> bool:
         SERVICE_IMPORT_HISTORY,
         async_handle_import,
         schema=IMPORT_HISTORY_SCHEMA,
+    )
+
+    async def async_handle_dashboard(_call: ServiceCall) -> ServiceResponse:
+        """Hand back a dashboard for whichever series this instance writes."""
+        names = await async_register_names(hass)
+        meters: list[Item] = []
+        solar_statistic: str | None = None
+        cost = False
+        for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+            meters.extend(entry.runtime_data.meters)
+            solar_statistic = solar_statistic or entry.options.get(CONF_SOLAR_STATISTIC)
+            cost = cost or bool(entry.options.get(CONF_PRICE_ENTITY))
+        if not meters:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="no_meters"
+            )
+
+        config = dashboard_config(
+            meters,
+            names,
+            hass.config.language,
+            solar_statistic=solar_statistic,
+            cost=cost,
+        )
+        # Both forms, because Home Assistant has two YAML editors that take
+        # different shapes: the dashboard's raw editor wants `views`, a single
+        # view's editor wants the view on its own.
+        return {
+            "dashboard": dump(config),
+            "view": dump(config["views"][0]),
+        }
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_DASHBOARD,
+        async_handle_dashboard,
+        supports_response=SupportsResponse.ONLY,
     )
     return True
 

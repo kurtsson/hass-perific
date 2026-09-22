@@ -75,6 +75,20 @@ COST_NAMES: Final = {
     "energy_export_compensation": "Exported electricity compensation",
 }
 
+# Solar is derived, never measured: the HAN port sees only the grid connection
+# point, so production comes from whatever inverter integration the user runs,
+# named as a statistic id. Self-consumption is what the panels made that never
+# reached the meter, which is why no meter can report it.
+SOLAR_SELF_CONSUMED: Final = "solar_self_consumed"
+SOLAR_AVOIDED_COST: Final = "solar_avoided_cost"
+SOLAR_REVENUE: Final = "solar_revenue"
+SOLAR_NAMES: Final = {
+    SOLAR_SELF_CONSUMED: "Solar used directly",
+    SOLAR_AVOIDED_COST: "Solar savings",
+    SOLAR_REVENUE: "Solar revenue",
+}
+
+CONF_SOLAR_STATISTIC: Final = "solar_statistic"
 CONF_PRICE_ENTITY: Final = "price_entity"
 CONF_PRICE_MARKUP: Final = "price_markup"
 CONF_ENERGY_TAX: Final = "energy_tax"
@@ -83,6 +97,7 @@ CONF_EXPORT_PRICE_ENTITY: Final = "export_price_entity"
 CONF_EXPORT_PREMIUM: Final = "export_premium"
 
 SERVICE_IMPORT_HISTORY: Final = "import_history"
+SERVICE_GET_DASHBOARD: Final = "get_dashboard"
 ATTR_START: Final = "start"
 
 KEY_STATUS: Final = "status"

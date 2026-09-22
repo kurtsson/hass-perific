@@ -41,18 +41,25 @@
           "energy_tax": "Energy tax",
           "vat_percent": "VAT",
           "export_price_entity": "Spot price entity for export",
-          "export_premium": "Export premium"
+          "export_premium": "Export premium",
+          "solar_statistic": "Solar production statistic"
         },
         "data_description": {
           "scan_interval": "Seconds between polls.",
           "price_entity": "A sensor giving the spot price per kWh, excluding VAT — a Nord Pool price sensor, for instance. Leave it empty and no cost is imported at all. Prices can only be read as far back as this sensor's own history goes, so cost will start later than the energy it prices.",
           "price_markup": "Your supplier's markup per kWh on electricity you buy, excluding VAT. Any other per-kWh charge, such as grid transfer, belongs here too. Not applied to what you sell.",
-          "energy_tax": "Energy tax per kWh on electricity you buy, excluding VAT. The published Swedish figure of 53.50 öre/kWh includes VAT, so the number to enter is 42.80 öre — that is 0.4280. Not applied to what you sell.",
+          "energy_tax": "Energy tax per kWh on electricity you buy, excluding VAT. The published Swedish figure includes VAT, so divide it by 1.25 before entering it — 45.00 öre/kWh published means 36.00 öre here, that is 0.3600. Not applied to what you sell.",
           "vat_percent": "Applied to the spot price, the markup and the tax together, for electricity you buy. 25 in Sweden. Not applied to what you sell.",
           "export_price_entity": "Leave empty unless you sell at a different spot price than you buy — the entity above is then used for both. This only shares the price: what you sell is still earned at spot plus the premium below, with no markup, no tax and no VAT.",
-          "export_premium": "Added to the spot price per kWh for what you sell. This is the only adjustment made to export; the markup, energy tax and VAT above apply to what you buy."
+          "export_premium": "Added to the spot price per kWh for what you sell. This is the only adjustment made to export; the markup, energy tax and VAT above apply to what you buy.",
+          "solar_statistic": "The statistic holding what your panels produced, from your inverter's own integration — SolarEdge, for instance. Leave it empty and no solar figures are written. What the panels made and you used yourself never crosses the meter, so it is worked out as production minus export and valued at what buying it would have cost."
         }
       }
+    }
+  },
+  "exceptions": {
+    "no_meters": {
+      "message": "No Perific meters are set up, so there is nothing to build a dashboard for."
     }
   },
   "issues": {
@@ -74,6 +81,15 @@
       },
       "energy_export_compensation": {
         "name": "Exported electricity compensation"
+      },
+      "solar_self_consumed": {
+        "name": "Solar used directly"
+      },
+      "solar_avoided_cost": {
+        "name": "Solar savings"
+      },
+      "solar_revenue": {
+        "name": "Solar revenue"
       },
       "power_import": {
         "name": "Power imported"
@@ -114,6 +130,10 @@
     }
   },
   "services": {
+    "get_dashboard": {
+      "name": "Get dashboard",
+      "description": "Builds a dashboard for the series this instance writes, with its own statistic ids filled in, and returns it as YAML to paste. Nothing is changed."
+    },
     "import_history": {
       "name": "Import energy history",
       "description": "Imports hourly energy statistics from the Perific cloud. Runs by itself every hour; use this to force a rebuild from a chosen point.",

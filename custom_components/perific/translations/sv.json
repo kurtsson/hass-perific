@@ -41,18 +41,25 @@
           "energy_tax": "Energiskatt",
           "vat_percent": "Moms",
           "export_price_entity": "Entitet med spotpris för såld el",
-          "export_premium": "Påslag för såld el"
+          "export_premium": "Påslag för såld el",
+          "solar_statistic": "Statistik för solelproduktion"
         },
         "data_description": {
           "scan_interval": "Sekunder mellan avläsningar.",
           "price_entity": "En sensor med spotpriset per kWh, exklusive moms — till exempel en Nord Pool-prissensor. Lämna tomt så importeras ingen kostnad alls. Priser kan bara läsas så långt bak som sensorns egen historik räcker, så kostnaden börjar senare än energin den prissätter.",
           "price_markup": "Elbolagets påslag per kWh på el du köper, exklusive moms. Andra avgifter per kWh, som elöverföring, hör också hemma här. Läggs inte på det du säljer.",
-          "energy_tax": "Energiskatt per kWh på el du köper, exklusive moms. Den publicerade svenska siffran 53,50 öre/kWh inkluderar moms, så värdet att ange är 42,80 öre — alltså 0,4280. Läggs inte på det du säljer.",
+          "energy_tax": "Energiskatt per kWh på el du köper, exklusive moms. Den publicerade svenska siffran inkluderar moms, så dela den med 1,25 innan du anger den — publicerade 45,00 öre/kWh blir 36,00 öre här, alltså 0,3600. Läggs inte på det du säljer.",
           "vat_percent": "Läggs på spotpriset, påslaget och skatten tillsammans, för el du köper. 25 i Sverige. Läggs inte på det du säljer.",
           "export_price_entity": "Lämna tomt om du inte säljer till ett annat spotpris än du köper — då används entiteten ovan för båda. Det här delar bara priset: det du säljer ger fortfarande spotpris plus påslaget nedan, utan elbolagets påslag, utan skatt och utan moms.",
-          "export_premium": "Läggs på spotpriset per kWh för det du säljer. Det är den enda justeringen för såld el; påslaget, energiskatten och momsen ovan gäller el du köper."
+          "export_premium": "Läggs på spotpriset per kWh för det du säljer. Det är den enda justeringen för såld el; påslaget, energiskatten och momsen ovan gäller el du köper.",
+          "solar_statistic": "Statistiken med vad dina paneler producerat, från växelriktarens egen integration — till exempel SolarEdge. Lämna tomt så skrivs inga solelsiffror alls. Det panelerna gjort och du använt själv passerar aldrig mätaren, så det räknas som produktion minus export och värderas till vad det hade kostat att köpa."
         }
       }
+    }
+  },
+  "exceptions": {
+    "no_meters": {
+      "message": "Ingen Perific-mätare är konfigurerad, så det finns inget att bygga en instrumentpanel för."
     }
   },
   "issues": {
@@ -74,6 +81,15 @@
       },
       "energy_export_compensation": {
         "name": "Ersättning för såld elektricitet"
+      },
+      "solar_self_consumed": {
+        "name": "Egenanvänd solel"
+      },
+      "solar_avoided_cost": {
+        "name": "Besparing från solel"
+      },
+      "solar_revenue": {
+        "name": "Intäkt från solel"
       },
       "power_import": {
         "name": "Inköpt effekt"
@@ -114,6 +130,10 @@
     }
   },
   "services": {
+    "get_dashboard": {
+      "name": "Hämta instrumentpanel",
+      "description": "Bygger en instrumentpanel för de serier den här instansen skriver, med dess egna statistik-id ifyllda, och lämnar tillbaka den som YAML att klistra in. Inget ändras."
+    },
     "import_history": {
       "name": "Importera energihistorik",
       "description": "Importerar timvis energistatistik från Perifics moln. Körs av sig själv varje timme; använd den här för att tvinga fram en ombyggnad från en vald tidpunkt.",

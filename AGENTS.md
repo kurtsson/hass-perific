@@ -243,8 +243,15 @@ No coverage gate. But the config flow is where the bugs live, so cover all of it
 
 ## Scope
 
-Grid import/export only. Solar production is **not** available from the HAN port and is out of
-scope; `CONTEXT.md` explains why, so it doesn't get re-litigated.
+Grid import/export only. Solar production is **not** available from the HAN port and measuring it
+stays out of scope; `CONTEXT.md` explains why, so it doesn't get re-litigated.
+
+Reading it is a different matter, and is in scope. `history.py` takes a production statistic the
+user names in the options — written by whatever inverter integration they run — and values the
+solar that never reached the meter. Nothing here talks to an inverter or claims to know what the
+panels did; it reads one series by id and does arithmetic against the grid figures. Keep that line:
+a hard dependency on any particular vendor, or any attempt to derive production from the HAN port,
+is still out.
 
 ## Running things
 

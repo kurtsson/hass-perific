@@ -26,6 +26,7 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    StatisticSelector,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
@@ -44,6 +45,7 @@ from .const import (
     CONF_EXPORT_PRICE_ENTITY,
     CONF_PRICE_ENTITY,
     CONF_PRICE_MARKUP,
+    CONF_SOLAR_STATISTIC,
     CONF_TOKEN_VALID_TO,
     CONF_VAT_PERCENT,
     DEFAULT_SCAN_INTERVAL,
@@ -121,6 +123,10 @@ OPTIONS_SCHEMA = vol.Schema(
             EntitySelector(EntitySelectorConfig(domain="sensor")), None
         ),
         vol.Optional(CONF_EXPORT_PREMIUM, default=0.0): _PRICE_FIELD,
+        # A statistic rather than an entity: what the panels produced is only
+        # kept usefully far back as long-term statistics, and the inverter
+        # integrations that write them do so under ids with no entity at all.
+        vol.Optional(CONF_SOLAR_STATISTIC): vol.Any(StatisticSelector(), None),
     }
 )
 

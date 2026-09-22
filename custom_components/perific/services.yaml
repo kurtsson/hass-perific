@@ -5,3 +5,6 @@ import_history:
       example: "2026-08-29T17:00:00+00:00"
       selector:
         datetime:
+
+get_dashboard:
+  fields: {}

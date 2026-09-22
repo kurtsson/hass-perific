@@ -36,11 +36,16 @@ from custom_components.perific.const import (
     CONF_ENERGY_TAX,
     CONF_PRICE_ENTITY,
     CONF_PRICE_MARKUP,
+    CONF_SOLAR_STATISTIC,
     CONF_VAT_PERCENT,
     COST_NAMES,
     DOMAIN,
     HISTORY_NAMES,
     HISTORY_REGISTERS,
+    SOLAR_AVOIDED_COST,
+    SOLAR_NAMES,
+    SOLAR_REVENUE,
+    SOLAR_SELF_CONSUMED,
 )
 from custom_components.perific.history import (
     HistoryImporter,
@@ -50,9 +55,11 @@ from custom_components.perific.history import (
     async_resume_point,
     cost_rows,
     cost_statistic_id,
+    hourly_deltas,
     hourly_registers,
     localise,
     registered_at,
+    solar_rows,
     statistic_id,
     statistic_metadata,
     statistic_rows,
@@ -321,6 +328,9 @@ class TestRegisterNames:
             "energy_export": "Exported electricity",
             "energy_import_cost": "Imported electricity cost",
             "energy_export_compensation": "Exported electricity compensation",
+            "solar_self_consumed": "Solar used directly",
+            "solar_avoided_cost": "Solar savings",
+            "solar_revenue": "Solar revenue",
         }
 
     async def test_follows_the_instance_language(self, hass: HomeAssistant) -> None:
@@ -339,7 +349,7 @@ class TestRegisterNames:
 
         names = await async_register_names(hass)
 
-        assert names == HISTORY_NAMES | COST_NAMES
+        assert names == HISTORY_NAMES | COST_NAMES | SOLAR_NAMES
 
     def test_registered_at_decodes_the_item_id(self) -> None:
         # ItemId is a millisecond epoch of the device's registration, and the
@@ -489,6 +499,90 @@ class TestCostRows:
 
     def test_no_prices_at_all_yields_nothing(self) -> None:
         assert cost_rows({H(2): 1.0, H(3): 2.0}, {}, Tariff(), 0.0) == []
+
+
+class TestHourlyDeltas:
+    """Turning cumulative sums into what each hour itself contributed."""
+
+    def test_each_hour_carries_its_own_difference(self) -> None:
+        assert hourly_deltas({H(1): 10.0, H(2): 12.5, H(3): 13.0}) == {
+            H(2): pytest.approx(2.5),
+            H(3): pytest.approx(0.5),
+        }
+
+    def test_the_first_hour_produces_nothing(self) -> None:
+        """It is either already accounted for or the start of the series."""
+        assert hourly_deltas({H(1): 10.0}) == {}
+
+    def test_input_order_does_not_matter(self) -> None:
+        assert hourly_deltas({H(3): 13.0, H(1): 10.0, H(2): 12.5}) == hourly_deltas(
+            {H(1): 10.0, H(2): 12.5, H(3): 13.0}
+        )
+
+
+def _running() -> dict[str, float]:
+    return dict.fromkeys((SOLAR_SELF_CONSUMED, SOLAR_AVOIDED_COST, SOLAR_REVENUE), 0.0)
+
+
+class TestSolarRows:
+    """Valuing the solar against the grid it displaced.
+
+    The inputs are per-hour deltas already, and the prices are what a kWh is
+    worth that hour with the tariff applied.
+    """
+
+    def test_self_consumption_is_production_not_exported(self) -> None:
+        rows = solar_rows(
+            {H(1): 5.0}, {H(1): 2.0}, {H(1): 1.0}, {H(1): 0.5}, _running()
+        )
+        assert sum_of(rows[SOLAR_SELF_CONSUMED][0]) == pytest.approx(3.0)
+
+    def test_savings_value_it_at_what_buying_would_have_cost(self) -> None:
+        rows = solar_rows(
+            {H(1): 5.0}, {H(1): 2.0}, {H(1): 4.0}, {H(1): 0.5}, _running()
+        )
+        assert sum_of(rows[SOLAR_AVOIDED_COST][0]) == pytest.approx(3.0 * 4.0)
+
+    def test_revenue_is_the_saving_plus_what_the_export_earned(self) -> None:
+        rows = solar_rows(
+            {H(1): 5.0}, {H(1): 2.0}, {H(1): 4.0}, {H(1): 0.5}, _running()
+        )
+        assert sum_of(rows[SOLAR_REVENUE][0]) == pytest.approx(3.0 * 4.0 + 2.0 * 0.5)
+
+    def test_export_beyond_production_is_not_negative_self_consumption(self) -> None:
+        """Two meters, two clocks: an hour can compute negative from skew alone."""
+        rows = solar_rows(
+            {H(1): 1.0}, {H(1): 3.0}, {H(1): 4.0}, {H(1): 0.5}, _running()
+        )
+        assert sum_of(rows[SOLAR_SELF_CONSUMED][0]) == pytest.approx(0.0)
+        assert sum_of(rows[SOLAR_AVOIDED_COST][0]) == pytest.approx(0.0)
+
+    def test_a_negative_price_lowers_the_running_total(self) -> None:
+        """Exporting at a negative spot costs money, and must be allowed to."""
+        rows = solar_rows(
+            {H(1): 5.0}, {H(1): 4.0}, {H(1): 0.1}, {H(1): -0.5}, _running()
+        )
+        # 1 kWh kept, worth 0.10; 4 kWh exported at -0.50 costs 2.00.
+        assert sum_of(rows[SOLAR_REVENUE][0]) == pytest.approx(0.1 - 2.0)
+
+    def test_continues_from_the_previous_totals(self) -> None:
+        running = _running() | {SOLAR_REVENUE: 100.0}
+        rows = solar_rows({H(1): 5.0}, {H(1): 2.0}, {H(1): 4.0}, {H(1): 0.5}, running)
+        assert sum_of(rows[SOLAR_REVENUE][0]) == pytest.approx(100.0 + 13.0)
+
+    def test_an_hour_missing_either_price_is_skipped(self) -> None:
+        rows = solar_rows({H(1): 5.0}, {H(1): 2.0}, {}, {H(1): 0.5}, _running())
+        assert rows[SOLAR_REVENUE] == []
+
+    def test_an_hour_missing_from_either_meter_is_skipped(self) -> None:
+        rows = solar_rows(
+            {H(1): 5.0, H(2): 5.0},
+            {H(2): 2.0},
+            {H(1): 4.0, H(2): 4.0},
+            {H(1): 0.5, H(2): 0.5},
+            _running(),
+        )
+        assert [row["start"] for row in rows[SOLAR_REVENUE]] == [H(2)]
 
 
 # The capture is from 2026-09-21 02:55-03:05 CEST, which is 00:55-01:05 UTC.
@@ -852,6 +946,91 @@ class TestHistoryImporterFailures:
         await async_wait_recording_done(hass)
 
         assert await async_resume_point(hass, cost_id) == first
+
+    async def test_solar_is_valued_and_its_unit_converted(
+        self,
+        recorder_mock: None,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+        meters: list[Item],
+        phasedata: object,
+    ) -> None:
+        """End to end, including the Wh production most inverters report.
+
+        SolarEdge stores Wh. Taking that for kWh would value the solar at a
+        thousandth of the truth, and nothing else in the pipeline would notice.
+        """
+        for source, unit, rows in (
+            ("spot", "SEK/kWh", [StatisticData(start=CAPTURE_HOURS[1], mean=2.0)]),
+            (
+                "solar",
+                "Wh",
+                [
+                    StatisticData(start=CAPTURE_HOURS[0], state=0.0, sum=0.0),
+                    StatisticData(
+                        start=CAPTURE_HOURS[1], state=100_000.0, sum=100_000.0
+                    ),
+                ],
+            ),
+        ):
+            async_add_external_statistics(
+                hass,
+                StatisticMetaData(
+                    mean_type=(
+                        StatisticMeanType.ARITHMETIC
+                        if source == "spot"
+                        else StatisticMeanType.NONE
+                    ),
+                    has_sum=source != "spot",
+                    name=source,
+                    source=DOMAIN,
+                    statistic_id=f"{DOMAIN}:{source}",
+                    unit_of_measurement=unit,
+                    unit_class=None,
+                ),
+                rows,
+            )
+        await async_wait_recording_done(hass)
+
+        with patch("custom_components.perific.EnegicClient", return_value=mock_client):
+            hass.config_entries.async_update_entry(
+                setup_integration,
+                options={
+                    CONF_PRICE_ENTITY: f"{DOMAIN}:spot",
+                    CONF_PRICE_MARKUP: 0.0,
+                    CONF_ENERGY_TAX: 0.0,
+                    CONF_VAT_PERCENT: 0.0,
+                    CONF_SOLAR_STATISTIC: f"{DOMAIN}:solar",
+                },
+            )
+            await hass.async_block_till_done()
+        mock_client.async_get_phase_data.return_value = parse_phase_data(phasedata)
+
+        await HistoryImporter(hass, setup_integration).async_import_since(
+            CAPTURE_HOURS[0]
+        )
+        await async_wait_recording_done(hass)
+
+        meter = setup_integration.runtime_data.meters[0]
+        exported = await async_resume_point(
+            hass, statistic_id(meter.item_id, "energy_export")
+        )
+        used = await async_resume_point(
+            hass, statistic_id(meter.item_id, SOLAR_SELF_CONSUMED)
+        )
+        revenue = await async_resume_point(
+            hass, statistic_id(meter.item_id, SOLAR_REVENUE)
+        )
+        assert exported is not None
+        assert used is not None
+        assert revenue is not None
+
+        # 100 kWh produced, so the export the capture recorded was kept back.
+        assert used.total == pytest.approx(100.0 - exported.total)
+        # Every kWh is worth 2.00 whether it was kept or sold, so the split
+        # cancels: the hour is worth the whole production either way.
+        assert revenue.total == pytest.approx(100.0 * 2.0)
 
     async def test_no_cost_without_a_price_entity(
         self,

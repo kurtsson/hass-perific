@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from homeassistant.components.recorder.const import DOMAIN as RECORDER_DOMAIN
@@ -25,6 +25,7 @@ from homeassistant.components.recorder.models import (
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
+    get_metadata,
     statistics_during_period,
 )
 from homeassistant.const import UnitOfEnergy
@@ -39,6 +40,7 @@ from .const import (
     CONF_EXPORT_PRICE_ENTITY,
     CONF_PRICE_ENTITY,
     CONF_PRICE_MARKUP,
+    CONF_SOLAR_STATISTIC,
     CONF_VAT_PERCENT,
     COST_KEYS,
     COST_NAMES,
@@ -48,6 +50,10 @@ from .const import (
     HISTORY_MIN_WINDOW,
     HISTORY_NAMES,
     HISTORY_REGISTERS,
+    SOLAR_AVOIDED_COST,
+    SOLAR_NAMES,
+    SOLAR_REVENUE,
+    SOLAR_SELF_CONSUMED,
 )
 
 if TYPE_CHECKING:
@@ -66,6 +72,9 @@ ENERGY_UNIT_CLASS = "energy"
 
 # The fewest stored hours that can produce a cost: one to difference against.
 _PAIR = 2
+
+# Inverter integrations differ on scale; SolarEdge reports Wh.
+_TO_KWH: Final = {"Wh": 0.001, "kWh": 1.0, "MWh": 1000.0}
 
 
 def localise(
@@ -150,7 +159,7 @@ async def async_register_names(hass: HomeAssistant) -> dict[str, str]:
     )
     return {
         key: translations.get(f"component.{DOMAIN}.entity.sensor.{key}.name") or default
-        for key, default in (HISTORY_NAMES | COST_NAMES).items()
+        for key, default in (HISTORY_NAMES | COST_NAMES | SOLAR_NAMES).items()
     }
 
 
@@ -272,6 +281,89 @@ def cost_metadata(meter: Item, key: str, name: str, currency: str) -> StatisticM
         unit_of_measurement=currency,
         unit_class=None,
     )
+
+
+def solar_metadata(
+    meter: Item, key: str, name: str, unit: str | None
+) -> StatisticMetaData:
+    """Describe one of the solar economy series.
+
+    ``unit`` carries the currency for the money series and None for the energy
+    one, which takes kWh and the energy unit class so the recorder can convert
+    it like any other energy statistic.
+    """
+    device = meter.name or meter.system_name or "Perific"
+    energy = unit is None
+    return StatisticMetaData(
+        mean_type=StatisticMeanType.NONE,
+        has_sum=True,
+        name=f"{device} {name}",
+        source=DOMAIN,
+        statistic_id=statistic_id(meter.item_id, key),
+        unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR if energy else unit,
+        unit_class=ENERGY_UNIT_CLASS if energy else None,
+    )
+
+
+async def async_statistic_unit(hass: HomeAssistant, statistic_id: str) -> str | None:
+    """Read the unit a statistic is stored in."""
+
+    def read() -> Any:
+        return get_metadata(hass, statistic_ids={statistic_id})
+
+    result = await get_instance(hass).async_add_executor_job(read)
+    found = result.get(statistic_id)
+    return found[1].get("unit_of_measurement") if found else None
+
+
+def hourly_deltas(totals: dict[datetime, float]) -> dict[datetime, float]:
+    """Turn cumulative sums into what each hour itself contributed.
+
+    The first hour produces nothing: it is the one the previous run already
+    accounted for, or the start of the series, and either way what happened
+    during it is unknown.
+    """
+    return {
+        hour: totals[hour] - totals[previous]
+        for previous, hour in pairwise(sorted(totals))
+    }
+
+
+def solar_rows(
+    produced: dict[datetime, float],
+    exported: dict[datetime, float],
+    buying: dict[datetime, float],
+    selling: dict[datetime, float],
+    running: dict[str, float],
+) -> dict[str, list[StatisticData]]:
+    """Accumulate what the panels were worth, hour by hour.
+
+    Self-consumption is what was produced and not exported. It is floored at
+    zero because production and export are read from two different meters whose
+    clocks and sampling differ: an hour can compute slightly negative from
+    timing alone, and that is measurement skew rather than energy.
+
+    Revenue recomputes the export half rather than reading the compensation
+    series, so that it always equals its own two parts.
+
+    ``buying`` and ``selling`` are already what a kWh is worth each hour, tariff
+    applied. A negative one needs no special case: the hour's contribution goes
+    negative and the running total falls, which is what paying to export
+    actually does.
+    """
+    rows: dict[str, list[StatisticData]] = {key: [] for key in running}
+    totals = dict(running)
+    for hour in sorted(produced.keys() & exported.keys()):
+        buy, sell = buying.get(hour), selling.get(hour)
+        if buy is None or sell is None:
+            continue
+        used = max(produced[hour] - exported[hour], 0.0)
+        totals[SOLAR_SELF_CONSUMED] += used
+        totals[SOLAR_AVOIDED_COST] += used * buy
+        totals[SOLAR_REVENUE] += used * buy + exported[hour] * sell
+        for key, total in totals.items():
+            rows[key].append(StatisticData(start=hour, state=total, sum=total))
+    return rows
 
 
 async def async_hourly_prices(
@@ -460,6 +552,10 @@ class HistoryImporter:
             for key in HISTORY_REGISTERS:
                 written += await self._async_import_cost(meter, key, names)
 
+            # After the cost: self-consumption is priced the same way, and
+            # differencing it needs the export series this run just extended.
+            written += await self._async_import_solar(meter, names)
+
         return written
 
     async def _async_walk(
@@ -629,3 +725,113 @@ class HistoryImporter:
             rows[-1]["start"].isoformat(),
         )
         return len(rows)
+
+    async def _async_import_solar(self, meter: Item, names: dict[str, str]) -> int:
+        """Value the solar against the grid it displaced, if one is configured.
+
+        What the panels are worth is mostly invisible to the meter: the surplus
+        that gets exported crosses it and is already priced, but the far larger
+        share consumed on site never reaches it at all. That half is production
+        minus export, and it is worth whatever buying it would have cost.
+
+        Production comes from another integration's statistic, so this reads it
+        rather than measuring anything — the HAN port cannot see the panels.
+        """
+        options = self.entry.options
+        solar_id = options.get(CONF_SOLAR_STATISTIC)
+        price_entity = options.get(CONF_PRICE_ENTITY)
+        if not solar_id or not price_entity:
+            _LOGGER.debug("No solar statistic or no price entity; not valuing solar")
+            return 0
+
+        unit = await async_statistic_unit(self.hass, solar_id)
+        factor = _TO_KWH.get(unit or "")
+        if factor is None:
+            _LOGGER.warning(
+                "Solar statistic %s is in %r, which is not an energy unit this "
+                "can convert; expected one of %s",
+                solar_id,
+                unit,
+                ", ".join(_TO_KWH),
+            )
+            return 0
+
+        resume = await async_resume_point(
+            self.hass, statistic_id(meter.item_id, SOLAR_REVENUE)
+        )
+        start = resume.after if resume and resume.after else registered_at(0)
+        window = (start, dt_util.utcnow())
+
+        produced = await async_stored_hours(self.hass, solar_id, window)
+        exported = await async_stored_hours(
+            self.hass, statistic_id(meter.item_id, "energy_export"), window
+        )
+        if len(produced) < _PAIR or len(exported) < _PAIR:
+            _LOGGER.debug(
+                "Solar has %d stored hour(s) and export %d since %s; nothing to value",
+                len(produced),
+                len(exported),
+                start.isoformat(),
+            )
+            return 0
+
+        prices = await async_hourly_prices(self.hass, price_entity, window)
+        export_entity = options.get(CONF_EXPORT_PRICE_ENTITY)
+        selling_prices = (
+            await async_hourly_prices(self.hass, export_entity, window)
+            if export_entity
+            else prices
+        )
+        if not prices:
+            _LOGGER.debug("No recorded prices since %s; cannot value solar", start)
+            return 0
+
+        running: dict[str, float] = dict.fromkeys(
+            (SOLAR_SELF_CONSUMED, SOLAR_AVOIDED_COST, SOLAR_REVENUE), 0.0
+        )
+        for key in running:
+            point = await async_resume_point(
+                self.hass, statistic_id(meter.item_id, key)
+            )
+            running[key] = point.total if point else 0.0
+
+        buying_tariff = self._tariff("energy_import")[1]
+        selling_tariff = self._tariff("energy_export")[1]
+        rows = solar_rows(
+            {hour: kwh * factor for hour, kwh in hourly_deltas(produced).items()},
+            hourly_deltas(exported),
+            {hour: buying_tariff.price(spot) for hour, spot in prices.items()},
+            {hour: selling_tariff.price(spot) for hour, spot in selling_prices.items()},
+            running,
+        )
+        if not rows[SOLAR_REVENUE]:
+            _LOGGER.debug(
+                "No hour has solar, export and a price together: %d solar hour(s) "
+                "since %s, %d export, %d price(s), %d in common",
+                len(produced),
+                start.isoformat(),
+                len(exported),
+                len(prices),
+                len(hourly_deltas(produced).keys() & hourly_deltas(exported).keys()),
+            )
+            return 0
+
+        currency = self.hass.config.currency or "EUR"
+        for key, series in rows.items():
+            async_add_external_statistics(
+                self.hass,
+                solar_metadata(
+                    meter,
+                    key,
+                    names[key],
+                    None if key == SOLAR_SELF_CONSUMED else currency,
+                ),
+                series,
+            )
+        _LOGGER.debug(
+            "Valued %d hour(s) of solar, %s .. %s",
+            len(rows[SOLAR_REVENUE]),
+            rows[SOLAR_REVENUE][0]["start"].isoformat(),
+            rows[SOLAR_REVENUE][-1]["start"].isoformat(),
+        )
+        return len(rows[SOLAR_REVENUE])

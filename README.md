@@ -12,7 +12,7 @@ Home Assistant integration for the **Perific One** energy monitor.
 Reads grid import and export from your electricity meter's HAN port via the Enegic cloud API, and
 feeds them to the Energy dashboard and long-term statistics.
 
-> **Early days.** Version 0.5.0, running against one household's meter. The sensors and their typing
+> **Early days.** Version 0.5.1, running against one household's meter. The sensors and their typing
 > are verified, but the API is undocumented and this has been exercised on a single device — expect
 > rough edges, and please open an issue if you hit one.
 
@@ -120,6 +120,9 @@ straight into long-term statistics:
 | Exported electricity | kWh | Hourly, same source. |
 | Imported electricity cost | your currency | Only if you configure a price entity. See [Cost](#cost). |
 | Exported electricity compensation | your currency | Same. |
+| Solar used directly | kWh | Only if you also name a solar production statistic. See [Solar](#solar). |
+| Solar savings | your currency | What that solar would have cost to buy. |
+| Solar revenue | your currency | The savings plus what the export earned. |
 
 These have no entity, so they appear in the Energy dashboard and under **Developer Tools →
 Statistics** and nowhere else — not in History, not on a card, not in an automation.
@@ -265,15 +268,18 @@ A Swedish worked example, for one hour in SE3:
 | | öre/kWh |
 |---|---|
 | Nord Pool spot, excluding VAT | 139.37 |
-| Supplier markup (påslag) | 5.00 |
-| Energy tax (energiskatt), excluding VAT | 42.80 |
-| **Subtotal, excluding VAT** | **187.17** |
-| **× 1.25 VAT** | **233.96** — about 2.34 kr/kWh |
+| Supplier markup (påslag), including grid transfer | 12.19 |
+| Energy tax (energiskatt), excluding VAT | 36.00 |
+| **Subtotal, excluding VAT** | **187.56** |
+| **× 1.25 VAT** | **234.45** — about 2.34 kr/kWh |
 
-Entered as `0.05`, `0.4280` and `25`, since the price entity reports SEK/kWh rather than öre.
+Entered as `0.1219`, `0.3600` and `25`, since the price entity reports SEK/kWh rather than öre.
+Those are the 2026 figures for one Sollentuna household; yours will differ, and the markup is
+whatever your contract and grid company add per kWh between them.
 
-**The energy tax field is the one that catches people.** The published Swedish figure of 53.50
-öre/kWh *includes* VAT. Enter 42.80, or VAT gets applied to it twice.
+**The energy tax field is the one that catches people.** The published Swedish figure *includes*
+VAT, so divide it by 1.25 before entering it — 45.00 öre published is 36.00 öre here. Enter the
+published number and VAT gets applied to it twice.
 
 Two things this cannot be:
 
@@ -295,6 +301,37 @@ price* and *Use a static price* are refused outright next to an imported statist
 rejection described above, showing up in the UI. The total-cost field is the only one Home Assistant
 will accept, and filling it makes the configuration valid again.
 
+### Solar
+
+If you have panels, most of what they earn you is invisible to the meter. The surplus you export
+crosses it and is priced as compensation — but the larger share you consume on the spot never
+reaches the meter at all, and Home Assistant has no concept of what avoiding a purchase was worth.
+
+Name your inverter's production statistic in the options and three more series appear:
+
+| Statistic | What it is |
+|---|---|
+| Solar used directly | production − export, per hour, never below zero |
+| Solar savings | that, valued at what buying it would have cost — full tariff, VAT included |
+| Solar revenue | the savings plus the export compensation: what the panels were worth in total |
+
+Production comes from whatever integration already reads your inverter — SolarEdge, Huawei, Fronius,
+anything that writes long-term statistics. **This integration never talks to an inverter and cannot
+measure production itself**; the HAN port only ever sees the grid connection point.
+
+Four things worth knowing:
+
+- **The unit is read, not assumed.** SolarEdge stores Wh, others kWh or MWh; all three convert.
+  Anything else is skipped with a warning rather than silently valued wrong by a factor of 1000.
+- **It starts where your production statistic starts**, which is usually later than the energy
+  history. Earlier hours stay unvalued rather than guessed at.
+- **Negative prices work out on their own.** Exporting at a negative spot costs money, so the
+  revenue total falls that hour — which is what actually happened. With the Swedish tariff above,
+  self-consumption stops being worth anything at a spot price around −0.48 kr/kWh, since that is
+  where the import price itself reaches zero.
+- **All export is treated as solar.** True for a plain panel installation, wrong if a battery also
+  discharges to the grid.
+
 To force a rebuild — after a long outage, or if you want to re-read a period — call
 **`perific.import_history`**. With no arguments it continues from wherever the last import stopped;
 give it a `start` and it re-reads from there, replacing what is stored:
@@ -307,6 +344,37 @@ data:
 
 How far back Enegic retains is not yet known — this device has not been in service long enough for
 a limit to show. It has no bearing on ordinary operation, which only ever reads forward.
+
+### A dashboard for these series
+
+The statistics have no entity, so most of Home Assistant cannot show them: no badge, no tile, no
+history graph. Two cards take a statistic id — **Statistic** for one figure over a period, and
+**Statistics graph** — and neither can go on the Energy dashboard, which is not extensible.
+
+So build an ordinary dashboard from them. The ids contain your meter's own id, which is why this
+cannot be a file you copy: call **`perific.get_dashboard`** and it returns one made for your
+install, with only the sections you have configured and the card names in your own language.
+
+```yaml
+action: perific.get_dashboard
+```
+
+The response holds two forms, because Home Assistant has two YAML editors that want different
+shapes:
+
+| Key | Where it goes |
+|---|---|
+| `dashboard` | a dashboard's **raw configuration editor** — starts with `views:` |
+| `view` | a single view's **⋮ → Edit in YAML** |
+
+**Copy only the block under the key, and remove its indentation.** Developer Tools renders any
+action response as a YAML document, so what you see on screen is `dashboard: |` followed by the
+config indented beneath it. Pasting that whole thing nests the config one level too deep and the
+editor rejects it — *"Expected an array value"* for the raw editor, since it finds no `views`.
+
+Nothing is created or changed for you: Home Assistant offers integrations no supported way to add a
+dashboard, and doing it through the private internals would break on upgrade and fight your own
+edits afterwards.
 
 ## Development
 
