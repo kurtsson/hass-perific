@@ -451,8 +451,17 @@ def cost_rows(
     return rows
 
 
-async def async_resume_point(hass: HomeAssistant, statistic_id: str) -> Resume | None:
+async def async_resume_point(
+    hass: HomeAssistant, statistic_id: str, *, rewind: int = 0
+) -> Resume | None:
     """Read back where the last run stopped, off its own last row.
+
+    ``rewind`` resumes that many rows earlier, so the caller rewrites hours it
+    has already written. A cost is worked out from the register as it stood at
+    the time, but an hour that is still running keeps growing afterwards — and
+    the next hour is differenced against its *final* register, so whatever
+    arrived late is never counted anywhere. Recomputing the last hour is what
+    collects it, and is safe because rows are keyed on their start.
 
     Runs on the recorder's executor: ``get_last_statistics`` opens a database
     session and must not be called from the event loop.
@@ -460,12 +469,17 @@ async def async_resume_point(hass: HomeAssistant, statistic_id: str) -> Resume |
 
     def read() -> Any:
         return get_last_statistics(
-            hass, 1, statistic_id, convert_units=True, types={"state", "sum"}
+            hass, rewind + 1, statistic_id, convert_units=True, types={"state", "sum"}
         )
 
     result = await get_instance(hass).async_add_executor_job(read)
-    rows = result.get(statistic_id) or []
-    if not rows:
+    # Oldest first, so the one to resume from is the first: asking for one more
+    # row than the rewind is what puts it there.
+    rows = sorted(result.get(statistic_id) or [], key=lambda row: row["start"])
+    if len(rows) <= rewind:
+        # Too short to rewind into, so there is no earlier total to carry on
+        # from. Starting the series again costs one pass over a series this
+        # small, and leaves no hour stuck at a partial value.
         return None
 
     row = rows[0]
@@ -665,7 +679,7 @@ class HistoryImporter:
             return 0
 
         cost_id = cost_statistic_id(meter.item_id, key)
-        resume = await async_resume_point(self.hass, cost_id)
+        resume = await async_resume_point(self.hass, cost_id, rewind=1)
         # Start *at* the last costed hour, not before it. That hour becomes the
         # predecessor the next one is differenced against, and is not itself
         # rewritten — `resume.total` already counts it, so re-costing it would
@@ -757,7 +771,7 @@ class HistoryImporter:
             return 0
 
         resume = await async_resume_point(
-            self.hass, statistic_id(meter.item_id, SOLAR_REVENUE)
+            self.hass, statistic_id(meter.item_id, SOLAR_REVENUE), rewind=1
         )
         start = resume.after if resume and resume.after else registered_at(0)
         window = (start, dt_util.utcnow())
@@ -791,7 +805,7 @@ class HistoryImporter:
         )
         for key in running:
             point = await async_resume_point(
-                self.hass, statistic_id(meter.item_id, key)
+                self.hass, statistic_id(meter.item_id, key), rewind=1
             )
             running[key] = point.total if point else 0.0
 

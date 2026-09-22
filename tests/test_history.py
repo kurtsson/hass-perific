@@ -947,6 +947,75 @@ class TestHistoryImporterFailures:
 
         assert await async_resume_point(hass, cost_id) == first
 
+    async def test_an_hour_costed_while_it_was_still_running_is_corrected(
+        self,
+        recorder_mock: None,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+        meters: list[Item],
+    ) -> None:
+        """A restart mid-hour costs part of it; the rest must not be lost.
+
+        The next hour is differenced against the register's final value, so
+        whatever arrives after the cost was written is counted nowhere unless
+        that hour is recomputed.
+        """
+        meter = meters[0]
+        hours = [CAPTURE_HOURS[0] + i * timedelta(hours=1) for i in range(2)]
+        spot = StatisticMetaData(
+            mean_type=StatisticMeanType.ARITHMETIC,
+            has_sum=False,
+            name="Spot",
+            source=DOMAIN,
+            statistic_id=f"{DOMAIN}:spot",
+            unit_of_measurement="SEK/kWh",
+            unit_class=None,
+        )
+        async_add_external_statistics(
+            hass, spot, [StatisticData(start=hour, mean=2.0) for hour in hours]
+        )
+
+        def register(second_hour: float) -> None:
+            async_add_external_statistics(
+                hass,
+                statistic_metadata(meter, "energy_import", "Imported"),
+                [
+                    StatisticData(start=hours[0], state=100.0, sum=0.0),
+                    StatisticData(
+                        start=hours[1], state=100.0 + second_hour, sum=second_hour
+                    ),
+                ],
+            )
+
+        # A tenth of the hour has arrived when the importer first runs.
+        register(0.1)
+        await async_wait_recording_done(hass)
+        with patch("custom_components.perific.EnegicClient", return_value=mock_client):
+            hass.config_entries.async_update_entry(
+                setup_integration, options={CONF_PRICE_ENTITY: f"{DOMAIN}:spot"}
+            )
+            await hass.async_block_till_done()
+        mock_client.async_get_phase_data.return_value = []
+
+        importer = HistoryImporter(hass, setup_integration)
+        await importer.async_run()
+        await async_wait_recording_done(hass)
+        cost_id = cost_statistic_id(meter.item_id, "energy_import")
+        partial = await async_resume_point(hass, cost_id)
+        assert partial is not None
+        assert partial.total == pytest.approx(0.1 * 2.0)
+
+        # The hour finishes and the register is rewritten with its real value.
+        register(1.0)
+        await async_wait_recording_done(hass)
+        await importer.async_run()
+        await async_wait_recording_done(hass)
+
+        corrected = await async_resume_point(hass, cost_id)
+        assert corrected is not None
+        assert corrected.total == pytest.approx(1.0 * 2.0)
+
     async def test_solar_is_valued_and_its_unit_converted(
         self,
         recorder_mock: None,
