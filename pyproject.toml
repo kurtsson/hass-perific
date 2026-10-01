@@ -16,7 +16,7 @@ dev = [
     "pytest-homeassistant-custom-component==0.13.365",
     "basedpyright==1.40.1",
     "pre-commit>=4.0",
-    "ruff==0.16.8",
+    "ruff==0.16.9",
 ]
 # The oldest Home Assistant the integration claims to support, per hacs.json. The
 # plugin pins Home Assistant itself, so its version is what sets the floor.
