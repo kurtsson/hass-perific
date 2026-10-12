@@ -92,7 +92,7 @@ class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
                 raise ConfigEntryAuthFailed(
                     "No usable Perific token is stored, and no password to mint one"
                 )
-            self.meters = await self._async_call(self.client.async_get_meters)
+            self.meters = await self.async_call(self.client.async_get_meters)
         except PerificAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except PerificError as err:
@@ -106,7 +106,7 @@ class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
     async def _async_update_data(self) -> dict[int, ItemPackets]:
         """Fetch one round of packets for every item on the account."""
         try:
-            packets = await self._async_call(self.client.async_get_latest_packets)
+            packets = await self.async_call(self.client.async_get_latest_packets)
         except PerificAuthError as err:
             # ConfigEntryAuthFailed is the only exception the coordinator does not
             # reschedule after, so raising it ends polling until someone answers the
@@ -129,8 +129,13 @@ class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
         self._async_rate_limit_cleared()
         return packets
 
-    async def _async_call[T](self, call: Callable[[], Awaitable[T]]) -> T:
-        """Make one API call, minting a fresh token and retrying once if rejected."""
+    async def async_call[T](self, call: Callable[[], Awaitable[T]]) -> T:
+        """Make one API call, minting a fresh token and retrying once if rejected.
+
+        Every authenticated request goes through here, the history import's
+        included: the client is shared, so one that bypasses this keeps failing
+        on a revoked token that a renewal would have replaced.
+        """
         try:
             return await call()
         except PerificAuthError:

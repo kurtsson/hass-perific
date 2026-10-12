@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -33,7 +34,7 @@ from homeassistant.helpers.recorder import get_instance
 from homeassistant.helpers.translation import async_get_translations
 from homeassistant.util import dt as dt_util
 
-from .api import PerificError
+from .api import PerificAuthError, PerificError
 from .const import (
     CONF_ENERGY_TAX,
     CONF_EXPORT_PREMIUM,
@@ -519,6 +520,12 @@ class HistoryImporter:
             return 0
         try:
             return await self.async_import_since(None)
+        except PerificAuthError as err:
+            # Already past a renewal attempt. The coordinator's polls own the
+            # escalation to reauth; this timer keeps firing while the prompt is
+            # open, so a traceback every hour would only bury it.
+            _LOGGER.warning("History import skipped: %s", err)
+            return 0
         except PerificError, ValueError:
             _LOGGER.exception("History import failed")
             return 0
@@ -585,7 +592,8 @@ class HistoryImporter:
         Both registers come out of the same response: fetching the window twice
         would double the calls against an API whose rate limits are unmeasured.
         """
-        client = self.entry.runtime_data.client
+        coordinator = self.entry.runtime_data
+        client = coordinator.client
         written = 0
 
         # Fixed for the whole walk. Re-reading the clock each time round leaves
@@ -602,7 +610,9 @@ class HistoryImporter:
                 break
             window = (cursor, min(cursor + HISTORY_CHUNK, now))
 
-            points = await client.async_get_phase_data(meter.item_id, *window)
+            points = await coordinator.async_call(
+                partial(client.async_get_phase_data, meter.item_id, *window)
+            )
             if not points:
                 # Also what a rejected request looks like, so this is "nothing
                 # more to read", never "no energy was used".

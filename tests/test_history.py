@@ -20,6 +20,7 @@ from homeassistant.components.recorder.models import (
     StatisticMetaData,
 )
 from homeassistant.components.recorder.statistics import async_add_external_statistics
+from homeassistant.const import CONF_TOKEN
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
@@ -27,6 +28,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 
 from custom_components.perific import history
 from custom_components.perific.api import (
+    PerificAuthError,
     PerificError,
     PhaseData,
     PhasePoint,
@@ -64,6 +66,8 @@ from custom_components.perific.history import (
     statistic_metadata,
     statistic_rows,
 )
+
+from .conftest import RENEWED_TOKEN_INFO
 
 if TYPE_CHECKING:
     from unittest.mock import AsyncMock
@@ -1189,6 +1193,52 @@ class TestHistoryImporterFailures:
         logger.exception.assert_called()
         assert logger.exception.call_args is not None
         assert "History import failed" in logger.exception.call_args.args[0]
+
+    async def test_a_revoked_token_is_renewed_rather_than_failing_the_run(
+        self,
+        recorder_mock: None,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """Polling stops once reauth is pending; this timer does not."""
+        rejected = False
+
+        async def revoked_once(*_args: object) -> list[PhasePoint]:
+            nonlocal rejected
+            if not rejected:
+                rejected = True
+                raise PerificAuthError("revoked")
+            return []
+
+        mock_client.async_get_phase_data.side_effect = revoked_once
+        mock_client.async_login.return_value = RENEWED_TOKEN_INFO
+
+        with patch.object(history, "_LOGGER") as logger:
+            assert await HistoryImporter(hass, setup_integration).async_run() == 0
+
+        mock_client.async_login.assert_awaited_once()
+        assert setup_integration.data[CONF_TOKEN] == RENEWED_TOKEN_INFO.token
+        logger.warning.assert_not_called()
+        logger.exception.assert_not_called()
+
+    async def test_a_rejected_password_is_one_line_not_a_traceback(
+        self,
+        recorder_mock: None,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        """The reauth prompt is the signal; an hourly traceback only buries it."""
+        mock_client.async_get_phase_data.side_effect = PerificAuthError("revoked")
+        mock_client.async_login.side_effect = PerificAuthError("wrong password")
+
+        with patch.object(history, "_LOGGER") as logger:
+            assert await HistoryImporter(hass, setup_integration).async_run() == 0
+
+        logger.exception.assert_not_called()
+        logger.warning.assert_called()
+        assert "History import skipped" in logger.warning.call_args.args[0]
 
     async def test_a_meter_reset_does_not_raise(
         self,
