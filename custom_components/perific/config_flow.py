@@ -1,8 +1,8 @@
 """Config flow for Perific.
 
-The password is exchanged for a token during setup and is not kept. The token the
-API mints is valid for a year; when it is finally rejected the reauth step below
-asks for the password again and mints a replacement.
+The password is exchanged for a token during setup and both are kept: the token for
+every request, the password so the coordinator can mint a replacement when the API
+revokes the token early. The reauth step below is for a password the API rejects.
 """
 
 from __future__ import annotations
@@ -11,7 +11,11 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.config_entries import (
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
 from homeassistant.const import (
     CONF_PASSWORD,
     CONF_SCAN_INTERVAL,
@@ -131,10 +135,11 @@ OPTIONS_SCHEMA = vol.Schema(
 )
 
 
-def token_entry_data(username: str, info: TokenInfo) -> dict[str, Any]:
-    """Build the stored entry data. The password is deliberately not part of it."""
+def entry_data(username: str, password: str, info: TokenInfo) -> dict[str, Any]:
+    """Build the stored entry data."""
     return {
         CONF_USERNAME: username,
+        CONF_PASSWORD: password,
         CONF_TOKEN: info.token,
         CONF_TOKEN_VALID_TO: info.valid_to.isoformat() if info.valid_to else None,
     }
@@ -163,10 +168,11 @@ class PerificConfigFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(username.lower())
             self._abort_if_unique_id_configured()
 
-            info = await self._async_login(username, user_input[CONF_PASSWORD], errors)
+            password = user_input[CONF_PASSWORD]
+            info = await self._async_login(username, password, errors)
             if info is not None:
                 return self.async_create_entry(
-                    title=username, data=token_entry_data(username, info)
+                    title=username, data=entry_data(username, password, info)
                 )
 
         return self.async_show_form(
@@ -176,7 +182,7 @@ class PerificConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth(
         self, _entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
-        """Handle a token that the API has stopped accepting."""
+        """Handle credentials that the API has stopped accepting."""
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -187,10 +193,11 @@ class PerificConfigFlow(ConfigFlow, domain=DOMAIN):
         username = entry.data[CONF_USERNAME]
         errors: dict[str, str] = {}
         if user_input is not None:
-            info = await self._async_login(username, user_input[CONF_PASSWORD], errors)
+            password = user_input[CONF_PASSWORD]
+            info = await self._async_login(username, password, errors)
             if info is not None:
                 return self.async_update_reload_and_abort(
-                    entry, data_updates=token_entry_data(username, info)
+                    entry, data_updates=entry_data(username, password, info)
                 )
 
         return self.async_show_form(
@@ -224,8 +231,12 @@ class PerificConfigFlow(ConfigFlow, domain=DOMAIN):
         return None
 
 
-class PerificOptionsFlow(OptionsFlow):
-    """Lets the poll interval be tuned after setup."""
+class PerificOptionsFlow(OptionsFlowWithReload):
+    """Lets the poll interval be tuned after setup.
+
+    Reloads only on an options change. An update listener would also reload on
+    every data change, including the coordinator saving a renewed token mid-poll.
+    """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None

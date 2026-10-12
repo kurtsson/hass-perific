@@ -43,9 +43,13 @@ TOKEN = "11111111-2222-3333-4444-555555555555"
 # date here would turn into a test that starts failing on a particular day.
 TOKEN_VALID_TO = dt_util.utcnow() + timedelta(days=365)
 TOKEN_INFO = TokenInfo(token=TOKEN, valid_to=TOKEN_VALID_TO)
+RENEWED_TOKEN_INFO = TokenInfo(
+    token="99999999-8888-7777-6666-555555555555", valid_to=TOKEN_VALID_TO
+)
 
 ENTRY_DATA = {
     CONF_USERNAME: USERNAME,
+    CONF_PASSWORD: PASSWORD,
     CONF_TOKEN: TOKEN,
     CONF_TOKEN_VALID_TO: TOKEN_VALID_TO.isoformat(),
 }
@@ -251,6 +255,16 @@ def config_entry() -> MockConfigEntry:
         unique_id=USERNAME,
         version=2,
         data=dict(ENTRY_DATA),
+    )
+
+
+@pytest.fixture
+def passwordless_config_entry() -> MockConfigEntry:
+    """A version 2 entry from a release that dropped the password after setup."""
+    data = dict(ENTRY_DATA)
+    del data[CONF_PASSWORD]
+    return MockConfigEntry(
+        domain=DOMAIN, title=USERNAME, unique_id=USERNAME, version=2, data=data
     )
 
 

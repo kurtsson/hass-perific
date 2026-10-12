@@ -102,10 +102,10 @@ class TestUserFlow:
         assert result["title"] == USERNAME
         assert result["data"] == ENTRY_DATA
 
-    async def test_the_password_is_traded_for_a_token_and_not_kept(
+    async def test_the_password_is_kept_beside_the_token(
         self, hass: HomeAssistant
     ) -> None:
-        """The entry is what ends up in .storage, so the password must not reach it."""
+        """Without it, a token the API revokes early can only end in a prompt."""
         result = await _start_user_flow(hass)
         with _patch_login():
             result = await hass.config_entries.flow.async_configure(
@@ -113,7 +113,7 @@ class TestUserFlow:
             )
             await hass.async_block_till_done()
 
-        assert CONF_PASSWORD not in result["data"]
+        assert result["data"][CONF_PASSWORD] == PASSWORD
         assert result["data"][CONF_TOKEN] == TOKEN
         assert result["result"].version == 2
 
@@ -201,9 +201,24 @@ class TestReauth:
         assert result["reason"] == "reauth_successful"
         assert config_entry.data[CONF_TOKEN] == renewed.token
         assert config_entry.data[CONF_TOKEN_VALID_TO] == valid_to.isoformat()
-        # Neither the username nor the new password is stored beyond the exchange.
         assert config_entry.data[CONF_USERNAME] == USERNAME
-        assert CONF_PASSWORD not in config_entry.data
+        assert config_entry.data[CONF_PASSWORD] == "a new password"
+
+    async def test_reauth_stores_the_password_an_older_entry_lacked(
+        self, hass: HomeAssistant, passwordless_config_entry: MockConfigEntry
+    ) -> None:
+        """How an entry from before passwords were kept gains automatic renewal."""
+        passwordless_config_entry.add_to_hass(hass)
+        result = await passwordless_config_entry.start_reauth_flow(hass)
+
+        with _patch_login():
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"], {CONF_PASSWORD: PASSWORD}
+            )
+            await hass.async_block_till_done()
+
+        assert result["reason"] == "reauth_successful"
+        assert passwordless_config_entry.data == ENTRY_DATA
 
     @pytest.mark.parametrize(("failure", "expected"), LOGIN_FAILURES)
     async def test_a_failed_reauth_shows_the_form_again(

@@ -20,8 +20,7 @@ if TYPE_CHECKING:
 
 # Item IDs are kept: they tie the packets to the meters and are meaningless off the
 # account. A MAC address identifies hardware to anyone reading a public issue. The
-# token's expiry stays visible — it is what explains a reauth prompt. CONF_PASSWORD
-# is only reachable on an entry that has not migrated to token storage yet.
+# token's expiry stays visible — it is what explains a reauth prompt.
 TO_REDACT = {CONF_USERNAME, CONF_PASSWORD, CONF_TOKEN, "mac_address"}
 
 

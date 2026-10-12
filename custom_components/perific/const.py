@@ -23,10 +23,10 @@ MAX_SCAN_INTERVAL: Final = 3600
 # missed minute packets — beyond any plausible jitter in the vendor's own pipeline.
 STALE_AFTER: Final = timedelta(minutes=5)
 
-# Consecutive rejections before the user is asked to sign in again. Home Assistant
-# stops polling the moment ConfigEntryAuthFailed is raised, so a token that is merely
-# being rejected intermittently must not end collection on its first bad answer.
-AUTH_FAILURES_BEFORE_REAUTH: Final = 3
+# Consecutive rejected polls before the user is asked to sign in again, each one
+# having already tried a fresh token. Home Assistant stops polling the moment
+# ConfigEntryAuthFailed is raised, so intermittent rejections must not end collection.
+AUTH_FAILURES_BEFORE_REAUTH: Final = 5
 
 # The two cumulative registers imported as external statistics, as
 # {statistic key: PhaseData field}. Both names match; the mapping is explicit so

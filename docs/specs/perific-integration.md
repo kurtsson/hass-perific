@@ -76,25 +76,35 @@ owns the client and the discovered meters, and a wrapper holding a single field 
 
 ### Authentication leans on HA's reauth flow
 
-The config flow takes a username and password, calls `PUT /createtoken`, and stores the token and
-its expiry on the config entry. **The password is not stored.** Tokens last about a year.
+The config flow takes a username and password, calls `PUT /createtoken`, and stores the password,
+the token and its expiry on the config entry. Every request uses the token; the password is only
+spent again when the token stops working.
 
-The alternative — keeping the password and re-minting on every setup — was what the first version
-did. It is simpler, but it puts a reusable account credential in `.storage` in plaintext for the
-life of the integration, and spends a login on every restart, reload and options change against an
-API whose rate limits are unmeasured. A token is narrower in blast radius, revocable, and already
-has somewhere to go when it stops working.
+Tokens are nominally valid for about a year, but the API revokes them earlier. A live instance had
+its token rejected on consecutive polls for several minutes, months before expiry, while a freshly
+minted one worked at once. A design that stored only the token turned every such revocation into a
+reauth prompt and a hole in the statistics until someone typed the password. So when a request is
+rejected, or the stored expiry has passed, the coordinator re-mints from the stored password,
+persists the new token and retries the request once. Reauth is left for a password the API itself
+rejects.
 
-Expiry is checked locally before the first request, so a year-old token prompts for a password
-instead of spending a request on a certain 401.
+The cost is a reusable account credential in `.storage` in plaintext, which is what most
+cloud-polling integrations, Zaptec included, already accept. Logging in on every setup is still
+avoided: it would spend a login on every restart, reload and options change against an API whose
+rate limits are unmeasured.
 
-Deliberately **not** implemented: re-minting inside an expiry margin. That would require keeping the
-password, which is the thing being avoided. For the annual expiry HA already has the right
-mechanism — raise `ConfigEntryAuthFailed` and the UI prompts for the password once.
+Expiry is checked locally before the first request, so a year-old token is replaced without first
+spending a request on a certain 401.
+
+Saving the renewed token changes the entry's data, and an update listener would reload the entry
+under the poll that saved it. The options flow is `OptionsFlowWithReload` instead, which reloads on
+an options change only.
 
 Entries created by the first version are migrated on load: the stored password is spent once for a
-token and then removed. A rejected password still migrates, into a reauth prompt; a network failure
-does not, so the password survives for the retry rather than forcing a reauth nobody needed.
+token and kept. A rejected password still migrates, without it, into a reauth prompt; a network
+failure does not, so the migration is retried rather than forcing a reauth nobody needed. Entries
+from the release that stored only a token have no password to renew with; they fall back to the
+prompt, and the reauth step stores the password from then on.
 
 The constraint that makes this work: **`ConfigEntryAuthFailed` must be raised directly, never
 wrapped in `UpdateFailed`.** Wrapped, the coordinator treats it as a transient failure, reauth never
@@ -103,10 +113,12 @@ triggers, and the integration silently stops updating.
 The symmetric mistake costs more. `DataUpdateCoordinator` guards its reschedule with
 `if not auth_failed`, so `ConfigEntryAuthFailed` does not merely fail one poll — it ends polling
 until reauth completes or the entry reloads. A live instance produced two 401s thirteen hours apart
-on a token valid for another year, and each one stopped collection outright. So rejections are
-counted, and only the third consecutive one escalates; any success resets the count. Setup is the
-exception and escalates immediately, because a failed setup is retried with a fresh coordinator and
-a counter there could never reach its threshold.
+on a token valid for another year, and each one stopped collection outright. So rejected polls are
+counted — each one after its renewal attempt has also failed — and only the fifth consecutive one
+escalates; any success resets the count. A renewal that fails to reach the API is a connection
+error, not a rejection, and is not counted. Setup is the exception and escalates as soon as renewal
+has failed, because a failed setup is retried with a fresh coordinator and a counter there could
+never reach its threshold.
 
 `/refreshtoken` exists but its prerequisites are unverified, so nothing depends on it. Re-minting via
 `/createtoken` always works.
@@ -239,11 +251,14 @@ repositories at all. Hence a deploy script.
 
 | Condition | Raised | Effect |
 |---|---|---|
-| Missing or expired token at setup | `ConfigEntryAuthFailed` | Entry enters reauth before any request is made |
-| Token rejected at setup | `ConfigEntryAuthFailed` | Entry enters reauth; UI prompts for password |
+| Missing or expired token at setup | nothing, if a password is stored | A token is minted before any other request |
+| Missing or expired token, no password | `ConfigEntryAuthFailed` | Entry enters reauth before any request is made |
+| Token rejected at setup | nothing, if renewal works | New token saved; the request is retried once |
+| Token rejected at setup, renewal rejected or impossible | `ConfigEntryAuthFailed` | Entry enters reauth; UI prompts for password |
 | API unreachable at setup | `ConfigEntryNotReady` | HA retries setup with backoff |
 | No supported items on the account | `ConfigEntryNotReady` | Retried; a real account shouldn't hit this |
-| 401 during a poll | `ConfigEntryAuthFailed` — **unwrapped** | Reauth triggers |
+| 401 during a poll | nothing, if renewal works | New token saved; the poll is retried once |
+| 401 during a poll, renewal rejected or impossible | `UpdateFailed`, then `ConfigEntryAuthFailed` — **unwrapped** — on the fifth in a row | Reauth triggers |
 | Connection error during a poll | `UpdateFailed` | Entities unavailable; coordinator retries |
 | 429 during a poll | `UpdateFailed` with retry hint, plus a Repairs issue | Backs off instead of hammering, and says so where a user will see it |
 | A field missing from a packet | nothing | That one entity reports unavailable |

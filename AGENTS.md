@@ -108,7 +108,13 @@ rejection has repeated. Wrapped forever, HA's reauth flow never triggers and the
 stops updating. Raised on the first 401, it is just as bad in the other direction: the coordinator
 does not reschedule after `ConfigEntryAuthFailed` (`update_coordinator.py`, the `if not auth_failed`
 guard around `_schedule_refresh`), so one bad answer from the API ends collection until a human
-answers the prompt. Count consecutive rejections and escalate on the third.
+answers the prompt. Re-mint the token from the stored password on each rejection, count the
+rejections that survive it, and escalate on the fifth consecutive one.
+
+**Don't add an update listener to the config entry.** The coordinator saves a renewed token into
+`entry.data` mid-poll, and a listener fires on data changes too, reloading the entry under the poll
+that saved it. Options reload through `OptionsFlowWithReload`, which HA refuses to combine with a
+listener anyway.
 
 **Poll slowly.** The API's rate limits are unverified and the community sources contradict each
 other. Faster polling buys nothing — statistics are hourly buckets.

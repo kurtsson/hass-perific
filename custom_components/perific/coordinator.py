@@ -10,17 +10,31 @@ import logging
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from homeassistant.const import CONF_SCAN_INTERVAL
+from homeassistant.const import (
+    CONF_PASSWORD,
+    CONF_SCAN_INTERVAL,
+    CONF_TOKEN,
+    CONF_USERNAME,
+)
 from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 # ItemPackets parameterises the coordinator's base class, so it is needed at runtime.
 from .api import ItemPackets, PerificAuthError, PerificError, PerificRateLimitError
-from .const import AUTH_FAILURES_BEFORE_REAUTH, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .config_flow import entry_data
+from .const import (
+    AUTH_FAILURES_BEFORE_REAUTH,
+    CONF_TOKEN_VALID_TO,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
@@ -72,7 +86,13 @@ class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
         for a password.
         """
         try:
-            self.meters = await self.client.async_get_meters()
+            # Checked locally so that a year-old token is replaced, or the user
+            # prompted, without first spending a request on a certain 401.
+            if not self._token_is_current() and not await self._async_renew_token():
+                raise ConfigEntryAuthFailed(
+                    "No usable Perific token is stored, and no password to mint one"
+                )
+            self.meters = await self._async_call(self.client.async_get_meters)
         except PerificAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except PerificError as err:
@@ -86,7 +106,7 @@ class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
     async def _async_update_data(self) -> dict[int, ItemPackets]:
         """Fetch one round of packets for every item on the account."""
         try:
-            packets = await self.client.async_get_latest_packets()
+            packets = await self._async_call(self.client.async_get_latest_packets)
         except PerificAuthError as err:
             # ConfigEntryAuthFailed is the only exception the coordinator does not
             # reschedule after, so raising it ends polling until someone answers the
@@ -108,6 +128,41 @@ class PerificCoordinator(DataUpdateCoordinator[dict[int, ItemPackets]]):
         self.auth_failures = 0
         self._async_rate_limit_cleared()
         return packets
+
+    async def _async_call[T](self, call: Callable[[], Awaitable[T]]) -> T:
+        """Make one API call, minting a fresh token and retrying once if rejected."""
+        try:
+            return await call()
+        except PerificAuthError:
+            if not await self._async_renew_token():
+                raise
+        return await call()
+
+    def _token_is_current(self) -> bool:
+        data = self.config_entry.data
+        if not data.get(CONF_TOKEN):
+            return False
+        valid_to = dt_util.parse_datetime(data.get(CONF_TOKEN_VALID_TO) or "")
+        return valid_to is None or valid_to > dt_util.utcnow()
+
+    async def _async_renew_token(self) -> bool:
+        """Mint a token from the stored password, if there is one.
+
+        Returns False when no password is stored. A rejected password raises
+        PerificAuthError, which counts like any other rejection.
+        """
+        data = self.config_entry.data
+        password = data.get(CONF_PASSWORD)
+        if not password:
+            return False
+
+        username = data[CONF_USERNAME]
+        info = await self.client.async_login(username, password)
+        self.hass.config_entries.async_update_entry(
+            self.config_entry, data=entry_data(username, password, info)
+        )
+        _LOGGER.info("The Perific token was rejected or expired; minted a new one")
+        return True
 
     @property
     def _issue_id(self) -> str:

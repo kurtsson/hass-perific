@@ -809,19 +809,16 @@ class TestHistoryImporterFailures:
         )
         await async_wait_recording_done(hass)
 
-        # Saving options reloads the entry, which sets the integration up again
-        # and so needs the client patched a second time.
-        with patch("custom_components.perific.EnegicClient", return_value=mock_client):
-            hass.config_entries.async_update_entry(
-                setup_integration,
-                options={
-                    CONF_PRICE_ENTITY: f"{DOMAIN}:spot",
-                    CONF_PRICE_MARKUP: 0.0,
-                    CONF_ENERGY_TAX: 0.0,
-                    CONF_VAT_PERCENT: 0.0,
-                },
-            )
-            await hass.async_block_till_done()
+        hass.config_entries.async_update_entry(
+            setup_integration,
+            options={
+                CONF_PRICE_ENTITY: f"{DOMAIN}:spot",
+                CONF_PRICE_MARKUP: 0.0,
+                CONF_ENERGY_TAX: 0.0,
+                CONF_VAT_PERCENT: 0.0,
+            },
+        )
+        await hass.async_block_till_done()
         mock_client.async_get_phase_data.return_value = parse_phase_data(phasedata)
 
         await HistoryImporter(hass, setup_integration).async_import_since(

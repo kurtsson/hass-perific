@@ -158,11 +158,15 @@ expected for anything installed outside core.
 Add the integration from **Settings → Devices & Services → Add Integration**, then enter your
 Perific username and password. Nothing goes in `configuration.yaml`.
 
-**Your password is not stored.** It is exchanged once for an API token, and only the token and your
-username are written to the config entry. Tokens are valid for about a year; when one expires — or
-if the API rejects it sooner — Home Assistant raises its normal reauthentication prompt and asks for
-the password again to mint a replacement. Upgrading from an earlier version migrates the entry
-automatically: the stored password is spent once and then removed.
+**Your password is stored in the config entry**, alongside the API token it is exchanged for. Every
+request uses the token. Tokens are nominally valid for about a year, but the API sometimes revokes
+them early, so when one is rejected or expires the integration signs in again with the stored
+password and carries on. Home Assistant's reauthentication prompt only appears if the password
+itself is rejected — after a password change, for example — or if renewal keeps failing for five
+polls in a row.
+
+An entry set up by version 0.3.x holds only the token. It keeps working, and the first time its
+token is rejected it asks for the password once; from then on it renews by itself.
 
 **Poll interval.** The default is 60 seconds, changeable under the integration's **Configure**
 button. The energy registers only advance once a minute, so polling faster buys nothing there; the

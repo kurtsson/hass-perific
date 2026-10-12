@@ -12,7 +12,7 @@
         }
       },
       "reauth_confirm": {
-        "description": "The Perific API is no longer accepting the token for {username}. Enter the password again to sign back in.",
+        "description": "The Perific API is no longer accepting the saved sign-in for {username}. If the password has changed, enter the new one to sign back in.",
         "data": {
           "password": "Password"
         }
