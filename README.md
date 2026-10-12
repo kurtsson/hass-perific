@@ -12,9 +12,10 @@ Home Assistant integration for the **Perific One** energy monitor.
 Reads grid import and export from your electricity meter's HAN port via the Enegic cloud API, and
 feeds them to the Energy dashboard and long-term statistics.
 
-> **Early days.** Version 0.5.2, running against one household's meter. The sensors and their typing
+> **Early days.** Version 0.6.1, running against one household's meter. The sensors and their typing
 > are verified, but the API is undocumented and this has been exercised on a single device — expect
-> rough edges, and please open an issue if you hit one.
+> rough edges, and please open an issue if you hit one. What changed in each release is in
+> [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Why this exists
 
@@ -165,7 +166,7 @@ password and carries on. Home Assistant's reauthentication prompt only appears i
 itself is rejected — after a password change, for example — or if renewal keeps failing for five
 polls in a row.
 
-An entry set up by version 0.3.x holds only the token. It keeps working, and the first time its
+An entry set up by versions 0.3.0 to 0.5.2 holds only the token. It keeps working, and the first time its
 token is rejected it asks for the password once; from then on it renews by itself.
 
 **Poll interval.** The default is 60 seconds, changeable under the integration's **Configure**
@@ -472,6 +473,7 @@ extra substring that must appear in some entity ID (empty by default), and `REST
 
 | | |
 |---|---|
+| [`CHANGELOG.md`](CHANGELOG.md) | What changed in each release |
 | [`AGENTS.md`](AGENTS.md) | Conventions, project layout, tooling |
 | [`CONTEXT.md`](CONTEXT.md) | Hardware, constraints, background |
 | [`docs/api/enegic.md`](docs/api/enegic.md) | Enegic API reference |

@@ -387,7 +387,7 @@ class TestFallingReadings:
 
     The monotonicity guard existed for the cumulative energy entities, which
     are gone: that series is imported into statistics instead, and
-    ``history.statistic_rows`` refuses a falling register at the point where it
+    ``history.statistic_rows`` handles a falling register at the point where it
     would matter. A measurement may fall freely.
     """
 

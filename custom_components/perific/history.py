@@ -10,8 +10,9 @@ is in ``docs/api/enegic.md``.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from enum import Enum, auto
 from functools import partial
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Final
@@ -66,6 +67,14 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 HOUR = timedelta(hours=1)
+
+# Limits for telling a bad reading from a real change of the counter.
+MAX_KWH_PER_HOUR: Final = 50.0
+# Non-zero readings after a suspicious one that must agree before it is trusted.
+CONFIRM_READINGS: Final = 3
+
+# Earlier than any stored row, so a rebuild can find the row before it however old.
+BEGINNING_OF_HISTORY: Final = datetime(2000, 1, 1, tzinfo=UTC)
 
 # kWh's unit class, as STATISTIC_UNIT_TO_UNIT_CONVERTER reports it on both the
 # deployment target and the floor in hacs.json.
@@ -202,8 +211,8 @@ class Resume:
     """Where the last run left off, as the last written row states it.
 
     Both halves are kept rather than just their difference: the energy series
-    needs the ``offset``, and the cost series needs ``total`` to carry on
-    accumulating from.
+    measures the next reading against ``state``, and both it and the cost
+    series carry on accumulating from ``total``.
     """
 
     state: float
@@ -212,11 +221,7 @@ class Resume:
 
     @property
     def offset(self) -> float:
-        """The constant between a row's register and its cumulative sum.
-
-        Reading it back off our own last row is what makes a re-import of an
-        hour reproduce the value already stored.
-        """
+        """The difference between a row's register and its cumulative sum."""
         return self.total - self.state
 
 
@@ -240,25 +245,143 @@ class Tariff:
         return (spot + self.markup + self.tax) * (1.0 + self.vat)
 
 
-def statistic_rows(
-    registers: dict[datetime, float], resume: Resume
-) -> list[StatisticData]:
-    """Build importable rows from end-of-hour registers."""
+class Reading(Enum):
+    """What a new counter reading means."""
+
+    OK = auto()
+    GLITCH = auto()
+    WAIT = auto()
+    NEW_BASELINE = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class Imported:
+    """Rows to write, where to continue, and hours that could not be judged yet."""
+
+    rows: list[StatisticData]
+    resume: Resume
+    undecided: dict[datetime, float] = field(default_factory=dict)
+
+
+def classify_reading(
+    previous: float, reading: float, hours_since: float | None, later: list[float]
+) -> Reading:
+    """Decide whether a reading is normal, bad, or a lasting change of the counter.
+
+    ``later`` holds the readings after this one, used to see if a change lasts.
+    """
+    is_missing = reading == 0.0 and previous > 0.0
+    is_drop = reading < previous
+    is_impossible_jump = (
+        hours_since is not None and reading - previous > MAX_KWH_PER_HOUR * hours_since
+    )
+
+    if is_missing:
+        return Reading.GLITCH
+    if not is_drop and not is_impossible_jump:
+        return Reading.OK
+    return _judge_change(previous, reading, later, is_drop=is_drop)
+
+
+def _judge_change(
+    previous: float, reading: float, later: list[float], *, is_drop: bool
+) -> Reading:
+    """Call it a glitch if the counter goes back, a new baseline if it stays.
+
+    Going back means a drop returns to the old level, or a jump falls again.
+    With fewer than ``CONFIRM_READINGS`` later readings it is too soon to tell.
+    """
+    soon = [value for value in later if value != 0.0][:CONFIRM_READINGS]
+    goes_back = (
+        any(value >= previous for value in soon)
+        if is_drop
+        else any(value < reading for value in soon)
+    )
+    has_lasted = len(soon) >= CONFIRM_READINGS
+
+    if goes_back:
+        return Reading.GLITCH
+    if not has_lasted:
+        return Reading.WAIT
+    return Reading.NEW_BASELINE
+
+
+def statistic_rows(registers: dict[datetime, float], resume: Resume) -> Imported:
+    """Turn end-of-hour counter readings into rows, skipping bad readings.
+
+    ``resume`` is the stored row just before these hours; earlier hours are ignored.
+    """
+    new = _hours_after(registers, resume.after)
+    hours = sorted(new)
     rows: list[StatisticData] = []
-    previous: float | None = None
-    for hour in sorted(registers):
-        register = registers[hour]
-        if previous is not None and register < previous:
-            raise ValueError(
-                f"register went backwards at {hour.isoformat()}: "
-                f"{previous} -> {register}. A meter reset breaks the constant "
-                "offset this mapping depends on."
-            )
-        previous = register
-        rows.append(
-            StatisticData(start=hour, state=register, sum=register + resume.offset)
-        )
-    return rows
+
+    for index, hour in enumerate(hours):
+        reading = new[hour]
+        later = [new[h] for h in hours[index + 1 :]]
+        match classify_reading(
+            resume.state, reading, _hours_between(resume.after, hour), later
+        ):
+            case Reading.GLITCH:
+                _LOGGER.debug("Skipping bad reading %s at %s", reading, hour)
+                continue
+            case Reading.WAIT:
+                undecided = {h: new[h] for h in hours[index:]}
+                return Imported(rows, resume, undecided)
+            case Reading.NEW_BASELINE:
+                _LOGGER.warning(
+                    "Counter moved %s -> %s at %s and stayed; using it as the new baseline",
+                    resume.state,
+                    reading,
+                    hour,
+                )
+                resume = _rebased(resume, reading, hour)
+            case Reading.OK:
+                resume = _advanced(resume, reading, hour)
+        rows.append(StatisticData(start=hour, state=resume.state, sum=resume.total))
+
+    return Imported(rows, resume)
+
+
+def _hours_after(
+    registers: dict[datetime, float], after: datetime | None
+) -> dict[datetime, float]:
+    """Drop the hours that are already stored at or before ``after``."""
+    if after is None:
+        return dict(registers)
+    return {hour: value for hour, value in registers.items() if hour > after}
+
+
+def _hours_between(earlier: datetime | None, later: datetime) -> float | None:
+    if earlier is None:
+        return None
+    return (later - earlier) / HOUR
+
+
+def _advanced(resume: Resume, reading: float, hour: datetime) -> Resume:
+    """Count the usage since the last reading.
+
+    Every run fetches the last stored hour again. Counting on from the stored
+    row's own state and sum is what makes rewriting that hour reproduce the
+    value it already has.
+    """
+    return Resume(
+        state=reading, total=resume.total + reading - resume.state, after=hour
+    )
+
+
+def _rebased(resume: Resume, reading: float, hour: datetime) -> Resume:
+    """Move to a new counter level without counting it as usage."""
+    return Resume(state=reading, total=resume.total, after=hour)
+
+
+def first_resume(registers: dict[datetime, float]) -> Resume:
+    """Start a new series at zero, on the first reading."""
+    return Resume(state=registers[min(registers)], total=0.0, after=None)
+
+
+def start_of_hour(when: datetime) -> datetime:
+    """Round down to the hour."""
+    return when.replace(minute=0, second=0, microsecond=0)
 
 
 def cost_statistic_id(item_id: int, key: str) -> str:
@@ -498,6 +621,36 @@ async def async_resume_point(
     )
 
 
+async def async_resume_before(
+    hass: HomeAssistant, statistic_id: str, before: datetime
+) -> Resume | None:
+    """Read the last stored row before ``before``, for a rebuild to continue from."""
+
+    def read() -> Any:
+        return statistics_during_period(
+            hass,
+            BEGINNING_OF_HISTORY,
+            before,
+            {statistic_id},
+            "hour",
+            None,
+            {"state", "sum"},
+        )
+
+    result = await get_instance(hass).async_add_executor_job(read)
+    rows = sorted(result.get(statistic_id) or [], key=lambda row: row["start"])
+    for row in reversed(rows):
+        state, total = row.get("state"), row.get("sum")
+        when = datetime.fromtimestamp(float(row["start"]), UTC)
+        if (
+            when < before
+            and isinstance(state, (int, float))
+            and isinstance(total, (int, float))
+        ):
+            return Resume(state=float(state), total=float(total), after=when)
+    return None
+
+
 class HistoryImporter:
     """Keeps the external energy series level with the vendor's record."""
 
@@ -537,22 +690,21 @@ class HistoryImporter:
 
         for meter in self.entry.runtime_data.meters:
             zone = meter.time_zone or str(self.hass.config.time_zone)
-            resumes = {
-                key: await async_resume_point(
-                    self.hass, statistic_id(meter.item_id, key)
-                )
-                for key in HISTORY_REGISTERS
-            }
-
+            ids = {key: statistic_id(meter.item_id, key) for key in HISTORY_REGISTERS}
             if start is not None:
-                # A forced rebuild keeps whatever offset the series already has,
-                # so replaced rows land on the same scale as those around them.
-                cursor = start
+                # A rebuild continues from the row before ``start``, or starts afresh.
+                cursor = start_of_hour(start)
+                resumes = {
+                    key: await async_resume_before(self.hass, ids[key], cursor)
+                    for key in HISTORY_REGISTERS
+                }
             else:
-                # Both registers are read from one response, so the cursor is the
-                # older of the two resume points. Re-importing an hour is a no-op,
-                # and the last written hour is refetched deliberately: it may have
-                # been incomplete when it was written.
+                # Continue from the second-last row, so the last (possibly
+                # unfinished) hour is fetched and checked again.
+                resumes = {
+                    key: await async_resume_point(self.hass, ids[key], rewind=1)
+                    for key in HISTORY_REGISTERS
+                }
                 already = [
                     resume.after
                     for resume in resumes.values()
@@ -561,7 +713,7 @@ class HistoryImporter:
                 cursor = (
                     min(already)
                     if len(already) == len(HISTORY_REGISTERS)
-                    else registered_at(meter.item_id)
+                    else start_of_hour(registered_at(meter.item_id))
                 )
 
             written += await self._async_walk(meter, zone, cursor, resumes, names)
@@ -601,6 +753,10 @@ class HistoryImporter:
         # reading of it, and the sub-second window that follows is sent as
         # startTime == endTime, which the API answers 400.
         now = dt_util.utcnow()
+        # Hours that could not be judged yet, retried with the next chunk.
+        carried: dict[str, dict[datetime, float]] = {
+            key: {} for key in HISTORY_REGISTERS
+        }
 
         for _ in range(HISTORY_MAX_CHUNKS):
             if now - cursor < HISTORY_MIN_WINDOW:
@@ -619,29 +775,27 @@ class HistoryImporter:
                 break
             localised = localise(points, zone, window)
 
-            for key, field in HISTORY_REGISTERS.items():
-                registers = hourly_registers(localised, field)
+            for key, register_field in HISTORY_REGISTERS.items():
+                registers = carried[key] | hourly_registers(localised, register_field)
                 if not registers:
                     continue
-
-                resume = resumes[key]
-                if resume is None:
-                    # First ever row for this register: start the series at zero.
-                    first = registers[min(registers)]
-                    resume = Resume(state=first, total=0.0, after=None)
-                    resumes[key] = resume
-
-                rows = statistic_rows(registers, resume)
-                async_add_external_statistics(
-                    self.hass, statistic_metadata(meter, key, names[key]), rows
+                imported = statistic_rows(
+                    registers, resumes[key] or first_resume(registers)
                 )
-                written += len(rows)
+                resumes[key] = imported.resume
+                carried[key] = imported.undecided
+                if not imported.rows:
+                    continue
+                async_add_external_statistics(
+                    self.hass, statistic_metadata(meter, key, names[key]), imported.rows
+                )
+                written += len(imported.rows)
                 _LOGGER.debug(
                     "Imported %d hour(s) of %s, %s .. %s",
-                    len(rows),
+                    len(imported.rows),
                     statistic_id(meter.item_id, key),
-                    rows[0]["start"].isoformat(),
-                    rows[-1]["start"].isoformat(),
+                    imported.rows[0]["start"].isoformat(),
+                    imported.rows[-1]["start"].isoformat(),
                 )
 
             cursor = window[1]

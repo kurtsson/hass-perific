@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.components.recorder.models import (
@@ -50,18 +51,25 @@ from custom_components.perific.const import (
     SOLAR_SELF_CONSUMED,
 )
 from custom_components.perific.history import (
+    MAX_KWH_PER_HOUR,
     HistoryImporter,
+    Imported,
+    Reading,
     Resume,
     Tariff,
     async_register_names,
     async_resume_point,
+    async_stored_hours,
+    classify_reading,
     cost_rows,
     cost_statistic_id,
+    first_resume,
     hourly_deltas,
     hourly_registers,
     localise,
     registered_at,
     solar_rows,
+    start_of_hour,
     statistic_id,
     statistic_metadata,
     statistic_rows,
@@ -70,6 +78,7 @@ from custom_components.perific.history import (
 from .conftest import RENEWED_TOKEN_INFO
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from unittest.mock import AsyncMock
 
     from homeassistant.core import HomeAssistant
@@ -79,18 +88,10 @@ if TYPE_CHECKING:
 
 STOCKHOLM = "Europe/Stockholm"
 
-# Taken from the live instance: sum - state is this constant on every row.
-LIVE_ANCHOR = Resume(state=248762.995, total=25.807, after=None)
-
-
-def anchor(offset: float) -> Resume:
-    """A resume point with the given register-to-sum offset."""
-    return Resume(state=0.0, total=offset, after=None)
-
 
 def H(hour: int) -> datetime:  # noqa: N802
-    """An hour on the capture's day, in UTC."""
-    return datetime(2026, 9, 21, hour, tzinfo=UTC)
+    """An hour counted from midnight on the capture's day, in UTC."""
+    return datetime(2026, 9, 21, tzinfo=UTC) + timedelta(hours=hour)
 
 
 def point(naive: str, imported: float = 1.0) -> PhasePoint:
@@ -363,92 +364,215 @@ class TestRegisterNames:
         )
 
 
+def readings(*values: float, first_hour: int = 0) -> dict[datetime, float]:
+    """Consecutive hourly readings starting at ``H(first_hour)``."""
+    return {H(first_hour + index): value for index, value in enumerate(values)}
+
+
+def sums(imported: Imported) -> list[float]:
+    return [sum_of(row) for row in imported.rows]
+
+
+def starts(imported: Imported) -> list[datetime]:
+    return [row["start"] for row in imported.rows]
+
+
+STAYS = 3  # CONFIRM_READINGS, spelled out so the tests pin it
+
+
+class TestClassifyReading:
+    """One reading against the last good one."""
+
+    @pytest.mark.parametrize(
+        ("previous", "reading", "hours_since", "later", "expected"),
+        [
+            pytest.param(100, 101, 1, [], Reading.OK, id="normal-usage"),
+            pytest.param(100, 100, 1, [], Reading.OK, id="no-usage"),
+            pytest.param(0, 0, 1, [], Reading.OK, id="unused-export-register"),
+            pytest.param(100, 0, 1, [0] * 30, Reading.GLITCH, id="zero-is-missing"),
+            pytest.param(0.5, 0, 1, [], Reading.GLITCH, id="zero-after-small-value"),
+            pytest.param(100, 50, 1, [101], Reading.GLITCH, id="drop-goes-back"),
+            pytest.param(100, 50, 1, [100], Reading.GLITCH, id="drop-back-to-same"),
+            pytest.param(100, 50, 1, [50, 51], Reading.WAIT, id="drop-too-soon"),
+            pytest.param(
+                100, 50, 1, [50, 51, 52], Reading.NEW_BASELINE, id="drop-lasts"
+            ),
+            pytest.param(
+                100, 50, 1, [0, 0, 0], Reading.WAIT, id="zeros-do-not-confirm"
+            ),
+            pytest.param(
+                100, 90, 1, [90] * (STAYS - 1), Reading.WAIT, id="shallow-too-soon"
+            ),
+            pytest.param(
+                100, 90, 1, [90] * STAYS, Reading.NEW_BASELINE, id="shallow-lasts"
+            ),
+            pytest.param(
+                100,
+                90,
+                1,
+                [90, 90, 90, *[100] * STAYS],
+                Reading.NEW_BASELINE,
+                id="passing-old-level-later-is-not-going-back",
+            ),
+            pytest.param(
+                100, 90, 1, [90, 90, 100], Reading.GLITCH, id="back-on-third-reading"
+            ),
+            pytest.param(
+                100, 1000, 1, [101], Reading.GLITCH, id="spike-comes-back-down"
+            ),
+            pytest.param(
+                100, 1000, 1, [1000] * (STAYS - 1), Reading.WAIT, id="jump-too-soon"
+            ),
+            pytest.param(
+                100, 1000, 1, [1000] * STAYS, Reading.NEW_BASELINE, id="jump-lasts"
+            ),
+            pytest.param(
+                100, 100 + MAX_KWH_PER_HOUR, 1, [], Reading.OK, id="at-the-limit"
+            ),
+            pytest.param(100, 184, 24, [], Reading.OK, id="gap-allows-more-usage"),
+            pytest.param(
+                100, 151, 1, [101], Reading.GLITCH, id="over-50-kwh-in-an-hour"
+            ),
+            pytest.param(100, 1000, None, [], Reading.OK, id="no-earlier-hour"),
+        ],
+    )
+    def test_classify(
+        self,
+        previous: float,
+        reading: float,
+        hours_since: float | None,
+        later: list[float],
+        expected: Reading,
+    ) -> None:
+        assert classify_reading(previous, reading, hours_since, later) is expected
+
+
 class TestStatisticRows:
-    """Mapping end-of-hour registers onto importable rows."""
+    """Turning hourly readings into rows."""
 
-    def test_first_ever_import_starts_the_series_at_zero(self) -> None:
-        resume = anchor(-248868.26)
-        registers = {
-            datetime(2026, 9, 21, 2, tzinfo=UTC): 248868.26,
-            datetime(2026, 9, 21, 3, tzinfo=UTC): 248871.76,
-        }
-        first, second = statistic_rows(registers, resume)
-        assert sum_of(first) == pytest.approx(0.0)
-        assert sum_of(second) == pytest.approx(3.5)
+    def test_a_new_series_starts_at_zero(self) -> None:
+        values = readings(248868.26, 248871.76)
+        imported = statistic_rows(values, first_resume(values))
+        assert sums(imported) == pytest.approx([0.0, 3.5])
 
-    def test_rows_carry_the_register_as_state(self) -> None:
-        [row] = statistic_rows(
-            {datetime(2026, 9, 21, 2, tzinfo=UTC): 248868.26}, LIVE_ANCHOR
-        )
-        assert state_of(row) == pytest.approx(248868.26)
-        assert row["start"] == datetime(2026, 9, 21, 2, tzinfo=UTC)
-
-    def test_consecutive_rows_differ_by_the_real_consumption(self) -> None:
-        registers = {
-            datetime(2026, 9, 21, 2, tzinfo=UTC): 248868.26,
-            datetime(2026, 9, 21, 3, tzinfo=UTC): 248871.76,
-        }
-        first, second = statistic_rows(registers, LIVE_ANCHOR)
-        assert sum_of(second) - sum_of(first) == pytest.approx(3.5)
+    def test_rows_carry_the_reading_as_state(self) -> None:
+        imported = statistic_rows(readings(10.0, 12.0), first_resume(readings(10.0)))
+        assert [state_of(row) for row in imported.rows] == [10.0, 12.0]
+        assert starts(imported) == [H(0), H(1)]
 
     def test_rows_are_ordered_and_on_the_hour(self) -> None:
-        registers = {
-            datetime(2026, 9, 21, 3, tzinfo=UTC): 2.0,
-            datetime(2026, 9, 21, 2, tzinfo=UTC): 1.0,
-        }
-        rows = statistic_rows(registers, anchor(0.0))
-        assert [row["start"] for row in rows] == sorted(row["start"] for row in rows)
-        assert all(row["start"].minute == 0 for row in rows)
-        assert all(row["start"].tzinfo is not None for row in rows)
-
-    def test_sums_may_be_negative_below_the_anchor(self) -> None:
-        """Only differences between sums are ever read.
-
-        ``change`` is a plain subtraction (``recorder/statistics.py:2089``), so
-        an hour below the anchor is correct rather than a bug.
-        """
-        [row] = statistic_rows(
-            {datetime(2026, 9, 1, tzinfo=UTC): 248700.0}, LIVE_ANCHOR
-        )
-        assert sum_of(row) < 0
+        imported = statistic_rows({H(3): 2.0, H(2): 1.0}, Resume(1.0, 0.0, None))
+        assert starts(imported) == [H(2), H(3)]
+        assert all(start.minute == 0 for start in starts(imported))
+        assert all(start.tzinfo is not None for start in starts(imported))
 
     def test_rewriting_an_hour_reproduces_the_same_sum(self) -> None:
-        """A run that overlaps what it already wrote must be a no-op.
+        """Every run fetches the last stored hour again; rewriting it is a no-op."""
+        values = readings(248868.26, 248871.76, 248873.01)
+        first = statistic_rows(values, first_resume(values))
+        before_last = first.rows[-2]
+        resume = Resume(
+            state=state_of(before_last),
+            total=sum_of(before_last),
+            after=before_last["start"],
+        )
 
-        The offset is read back off the previous run's own row, so the
-        arithmetic that produced a value is the arithmetic that reproduces it.
-        """
-        registers = {datetime(2026, 9, 21, 2, tzinfo=UTC): 248868.26}
-        [first] = statistic_rows(registers, anchor(-248868.26))
-        resume = Resume(state=state_of(first), total=sum_of(first), after=None)
-        [again] = statistic_rows(registers, resume)
-        assert sum_of(again) == pytest.approx(sum_of(first))
+        again = statistic_rows(values, resume)
+
+        assert starts(again) == [H(2)]
+        assert sums(again) == pytest.approx(sums(first)[-1:])
+
+    def test_continues_from_the_stored_row(self) -> None:
+        resume = Resume(state=100.0, total=40.0, after=H(0))
+        imported = statistic_rows(readings(101.0, 103.0, first_hour=1), resume)
+        assert sums(imported) == pytest.approx([41.0, 43.0])
+        assert imported.resume == Resume(state=103.0, total=43.0, after=H(2))
+
+    def test_hours_already_stored_are_ignored(self) -> None:
+        resume = Resume(state=100.0, total=40.0, after=H(1))
+        imported = statistic_rows(readings(1.0, 100.0, 101.0), resume)
+        assert starts(imported) == [H(2)]
+
+    def test_the_first_fetched_hour_is_checked_too(self) -> None:
+        resume = Resume(state=100.0, total=40.0, after=H(0))
+        imported = statistic_rows(readings(0.0, 101.0, first_hour=1), resume)
+        assert starts(imported) == [H(2)]
+        assert sums(imported) == pytest.approx([41.0])
+
+    def test_one_zero_hour_is_skipped(self) -> None:
+        """Seen in the vendor's record: 13616.16, then 0.0, then 13617."""
+        values = readings(13615.0, 13616.16, 0.0, 13617.0)
+        imported = statistic_rows(values, first_resume(values))
+        assert starts(imported) == [H(0), H(1), H(3)]
+        assert sums(imported) == pytest.approx([0.0, 1.16, 2.0])
+
+    def test_a_long_outage_of_zeros_is_skipped(self) -> None:
+        values = readings(13616.0, *[0.0] * 10, 13617.0)
+        imported = statistic_rows(values, first_resume(values))
+        assert sums(imported) == pytest.approx([0.0, 1.0])
+
+    def test_a_drop_that_lasts_becomes_the_new_baseline(self) -> None:
+        values = readings(100.0, 101.0, 1.0, 2.0, 3.0, 4.0)
+        imported = statistic_rows(values, first_resume(values))
+        # The swap itself is not usage; what the new meter counts after it is.
+        assert sums(imported) == pytest.approx([0.0, 1.0, 1.0, 2.0, 3.0, 4.0])
+
+    def test_a_lasting_small_correction_writes_every_hour(self) -> None:
+        values = readings(100.0, 90.0, *[90.0 + n / 10 for n in range(1, STAYS + 1)])
+        imported = statistic_rows(values, first_resume(values))
+        assert len(imported.rows) == len(values)
+        assert imported.undecided == {}
+        assert sums(imported)[-1] == pytest.approx(STAYS / 10)
+
+    def test_a_dip_that_recovers_only_after_the_wait_is_a_new_baseline(self) -> None:
+        values = readings(100.0, 90.0, *[90.0] * STAYS, 101.0)
+        imported = statistic_rows(values, first_resume(values))
+        assert len(imported.rows) == len(values)
+        assert sums(imported)[-1] == pytest.approx(11.0)
+
+    def test_a_small_meter_swap_keeps_the_usage_after_it(self) -> None:
+        """Usage after a shallow swap can pass the old level without undoing it."""
+        values = readings(100.0, 62.0, *[62.0 + 2 * n for n in range(1, STAYS + 1)])
+        imported = statistic_rows(values, first_resume(values))
+        assert len(imported.rows) == len(values)
+        assert sums(imported)[-1] == pytest.approx(2.0 * STAYS)
+
+    def test_a_small_dip_that_recovers_is_skipped(self) -> None:
+        values = readings(12693.083, 12666.474, 12680.0, 12694.0)
+        imported = statistic_rows(values, first_resume(values))
+        assert starts(imported) == [H(0), H(3)]
+        assert sums(imported) == pytest.approx([0.0, 0.917])
+
+    def test_a_spike_up_is_skipped(self) -> None:
+        values = readings(100.0, 99999.0, 101.0)
+        imported = statistic_rows(values, first_resume(values))
+        assert starts(imported) == [H(0), H(2)]
+        assert sums(imported) == pytest.approx([0.0, 1.0])
+
+    def test_hours_that_cannot_be_judged_yet_are_handed_back(self) -> None:
+        values = readings(100.0, 101.0, 50.0, 51.0)
+        resume = first_resume(values)
+        imported = statistic_rows(values, resume)
+        assert starts(imported) == [H(0), H(1)]
+        assert imported.undecided == {H(2): 50.0, H(3): 51.0}
+        assert imported.resume == Resume(state=101.0, total=1.0, after=H(1))
+
+    def test_handed_back_hours_are_judged_once_more_arrive(self) -> None:
+        first = statistic_rows(readings(100.0, 50.0, 51.0), first_resume(readings(100)))
+        later = first.undecided | readings(52.0, 53.0, first_hour=3)
+        second = statistic_rows(later, first.resume)
+        assert sums(second) == pytest.approx([0.0, 1.0, 2.0, 3.0])
 
     def test_a_flat_register_is_accepted(self) -> None:
-        # The export register sits flat for hours at a time. Only a fall is
-        # suspect.
-        registers = {
-            datetime(2026, 9, 21, 2, tzinfo=UTC): 18116.944,
-            datetime(2026, 9, 21, 3, tzinfo=UTC): 18116.944,
-        }
-        first, second = statistic_rows(registers, anchor(0.0))
-        assert sum_of(second) == sum_of(first)
+        values = readings(18116.944, 18116.944)
+        imported = statistic_rows(values, first_resume(values))
+        assert sums(imported) == [0.0, 0.0]
 
-    def test_a_falling_register_is_refused(self) -> None:
-        """A register that goes backwards is a meter reset.
-
-        The offset is no longer constant across one, so writing through it
-        would corrupt the series.
-        """
-        registers = {
-            datetime(2026, 9, 21, 2, tzinfo=UTC): 248868.26,
-            datetime(2026, 9, 21, 3, tzinfo=UTC): 248860.0,
-        }
-        with pytest.raises(ValueError, match="backwards"):
-            statistic_rows(registers, anchor(0.0))
-
-    def test_an_empty_mapping_yields_no_rows(self) -> None:
-        assert statistic_rows({}, anchor(0.0)) == []
+    def test_no_readings_gives_no_rows(self) -> None:
+        resume = Resume(state=1.0, total=0.0, after=H(0))
+        imported = statistic_rows({}, resume)
+        assert imported.rows == []
+        assert imported.resume == resume
 
 
 class TestTariff:
@@ -646,7 +770,7 @@ class TestHistoryImporter:
         await HistoryImporter(hass, setup_integration).async_run()
 
         assert mock_client.async_get_phase_data.await_args_list[0].args[1] == (
-            registered_at(meter.item_id)
+            start_of_hour(registered_at(meter.item_id))
         )
 
     async def test_writes_the_captured_hours(
@@ -774,6 +898,161 @@ class TestHistoryImporter:
         await HistoryImporter(hass, setup_integration).async_run()
 
         assert mock_client.async_get_phase_data.await_count == 1
+
+
+def serve(hourly: dict[datetime, float]) -> Callable[..., Awaitable[list[PhasePoint]]]:
+    """Answer phase-data requests from hourly import readings, like the API does."""
+    zone = ZoneInfo(STOCKHOLM)
+
+    async def get_phase_data(
+        _item_id: int, start: datetime, end: datetime
+    ) -> list[PhasePoint]:
+        return [
+            PhasePoint(
+                timestamp=(hour + timedelta(minutes=55))
+                .astimezone(zone)
+                .replace(tzinfo=None),
+                data=PhaseData(energy_import=value, energy_export=0.0),
+            )
+            for hour, value in sorted(hourly.items())
+            if start <= hour + timedelta(minutes=55) < end
+        ]
+
+    return get_phase_data
+
+
+async def store_import_rows(
+    hass: HomeAssistant, meter: Item, rows: dict[datetime, tuple[float, float]]
+) -> None:
+    """Store ``hour -> (state, sum)`` rows for both registers."""
+    for key in HISTORY_REGISTERS:
+        async_add_external_statistics(
+            hass,
+            statistic_metadata(meter, key, HISTORY_NAMES[key]),
+            [
+                StatisticData(start=hour, state=state, sum=total)
+                for hour, (state, total) in rows.items()
+            ],
+        )
+    await async_wait_recording_done(hass)
+
+
+async def stored_sums(hass: HomeAssistant, meter: Item) -> dict[datetime, float]:
+    return await async_stored_hours(
+        hass,
+        statistic_id(meter.item_id, "energy_import"),
+        (H(0), H(24 * 3)),
+    )
+
+
+@pytest.mark.freeze_time("2026-09-23 06:00:00+00:00")
+class TestBadReadingsAcrossRuns:
+    """Bad readings handled by the importer, not just by ``statistic_rows``."""
+
+    async def test_a_reset_at_the_end_of_a_chunk_loses_no_hours(
+        self,
+        recorder_mock: None,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        # Chunks are one day; the meter is swapped at 22:00 on the first day.
+        values = {H(hour): 100.0 + hour for hour in range(22)}
+        values |= {H(hour): float(hour - 21) for hour in range(22, 30)}
+        mock_client.async_get_phase_data.side_effect = serve(values)
+        meter = setup_integration.runtime_data.meters[0]
+        await hass.async_block_till_done()
+
+        await HistoryImporter(hass, setup_integration).async_import_since(H(0))
+        await async_wait_recording_done(hass)
+
+        sums = await stored_sums(hass, meter)
+        assert sorted(sums) == sorted(values)
+        assert sums[H(21)] == pytest.approx(21.0)
+        assert sums[H(22)] == pytest.approx(21.0)  # the swap is not usage
+        assert sums[H(29)] == pytest.approx(28.0)
+
+    async def test_a_rebuild_continues_from_the_row_before_it(
+        self,
+        recorder_mock: None,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        meter = setup_integration.runtime_data.meters[0]
+        await hass.async_block_till_done()
+        await store_import_rows(
+            hass, meter, {H(2): (102.0, 2.0), H(10): (500.0, 900.0)}
+        )
+        mock_client.async_get_phase_data.side_effect = serve({H(3): 103.0, H(4): 104.0})
+
+        await HistoryImporter(hass, setup_integration).async_import_since(H(3))
+        await async_wait_recording_done(hass)
+
+        sums = await stored_sums(hass, meter)
+        assert sums[H(3)] == pytest.approx(3.0)
+        assert sums[H(4)] == pytest.approx(4.0)
+
+    async def test_a_rebuild_from_mid_hour_includes_that_hour(
+        self,
+        recorder_mock: None,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        meter = setup_integration.runtime_data.meters[0]
+        await hass.async_block_till_done()
+        await store_import_rows(hass, meter, {H(2): (102.0, 2.0), H(3): (0.0, -100.0)})
+        mock_client.async_get_phase_data.side_effect = serve({H(3): 103.0, H(4): 104.0})
+
+        await HistoryImporter(hass, setup_integration).async_import_since(
+            H(3) + timedelta(minutes=30)
+        )
+        await async_wait_recording_done(hass)
+
+        sums = await stored_sums(hass, meter)
+        assert sums[H(3)] == pytest.approx(3.0)
+
+    async def test_a_rebuild_finds_a_row_long_before_it(
+        self,
+        recorder_mock: None,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        meter = setup_integration.runtime_data.meters[0]
+        await hass.async_block_till_done()
+        long_ago = H(0) - timedelta(days=60)
+        await store_import_rows(hass, meter, {long_ago: (100.0, 5000.0)})
+        mock_client.async_get_phase_data.side_effect = serve({H(3): 103.0})
+
+        await HistoryImporter(hass, setup_integration).async_import_since(H(3))
+        await async_wait_recording_done(hass)
+
+        sums = await stored_sums(hass, meter)
+        assert sums[H(3)] == pytest.approx(5003.0)
+
+    async def test_the_last_stored_hour_is_checked_when_fetched_again(
+        self,
+        recorder_mock: None,
+        hass: HomeAssistant,
+        setup_integration: MockConfigEntry,
+        mock_client: AsyncMock,
+    ) -> None:
+        meter = setup_integration.runtime_data.meters[0]
+        await hass.async_block_till_done()
+        await store_import_rows(hass, meter, {H(0): (100.0, 0.0), H(1): (101.0, 1.0)})
+        # The vendor now reports the last stored hour as 0.0.
+        mock_client.async_get_phase_data.side_effect = serve(
+            {H(0): 100.0, H(1): 0.0, H(2): 102.0}
+        )
+
+        await HistoryImporter(hass, setup_integration).async_run()
+        await async_wait_recording_done(hass)
+
+        sums = await stored_sums(hass, meter)
+        assert sums[H(1)] == pytest.approx(1.0)
+        assert sums[H(2)] == pytest.approx(2.0)
 
 
 class TestHistoryImporterFailures:
@@ -1247,13 +1526,13 @@ class TestHistoryImporterFailures:
         setup_integration: MockConfigEntry,
         mock_client: AsyncMock,
     ) -> None:
-        """A falling register is refused, and the refusal stays contained."""
+        """A falling register no longer aborts the import."""
         mock_client.async_get_phase_data.return_value = [
             point("2026-09-21T02:55:00", 100.0),
             point("2026-09-21T03:55:00", 50.0),
         ]
 
         with patch.object(history, "_LOGGER") as logger:
-            assert await HistoryImporter(hass, setup_integration).async_run() == 0
+            assert await HistoryImporter(hass, setup_integration).async_run() > 0
 
-        logger.exception.assert_called()
+        logger.exception.assert_not_called()

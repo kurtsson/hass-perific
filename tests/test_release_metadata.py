@@ -2,7 +2,8 @@
 
 The version lives in two files that are read by two different systems — HACS reads
 the manifest, the Python tooling reads pyproject — and nothing fails loudly when they
-disagree. They had already drifted once before this test existed.
+disagree. They had already drifted once before this test existed. The README states
+it too, for people, and that copy had been left a release behind.
 """
 
 from __future__ import annotations
@@ -29,6 +30,16 @@ def _manifest() -> dict:
 
 def test_the_project_and_manifest_versions_match() -> None:
     assert _project_version() == _manifest()["version"]
+
+
+def test_the_readme_states_the_current_version() -> None:
+    # Anchored to the banner rather than any version in the text: the README also
+    # names older versions on purpose, when describing what they did.
+    readme = (REPO_ROOT / "README.md").read_text()
+    match = re.search(r"\*\*Early days\.\*\* Version (\S+?),", readme)
+
+    assert match, "the README's 'Early days' banner no longer names a version"
+    assert match.group(1) == _project_version()
 
 
 def test_the_version_is_semver() -> None:
