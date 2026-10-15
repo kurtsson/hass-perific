@@ -27,7 +27,7 @@ jobs:
 
       # Pinned to a full version: setup-uv publishes moving major tags only up
       # to v7, so `@v10` does not resolve.
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
           enable-cache: true
           version: ${{ env.UV_VERSION }}
@@ -58,7 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
           enable-cache: true
           version: ${{ env.UV_VERSION }}
