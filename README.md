@@ -282,11 +282,19 @@ Entered as `0.1219`, `0.3600` and `25`, since the price entity reports SEK/kWh r
 Those are the 2026 figures for one Sollentuna household; yours will differ, and the markup is
 whatever your contract and grid company add per kWh between them.
 
+**Checked against a real invoice.** For October 2026, the same household's imported cost series
+came to 1 764.74 kr. The invoice's per-kWh lines add up to 1 753.25 kr with VAT: spot, markup and
+discount from the supplier, plus energiavgift and energiskatt from the grid company. Nearly all of
+the 11.49 kr gap is the markup. October's per-kWh supplements came to 11.44 öre, against the 12.19
+entered above, and 0.75 öre on 1 195 kWh with VAT is 11.21 kr. That leaves 0.28 kr unaccounted
+for. To compare against your own bill, add up both companies' per-kWh lines: a Swedish invoice
+puts energiskatt and energiavgift under *elnät*, so the *elhandel* total alone looks far too low.
+
 **The energy tax field is the one that catches people.** The published Swedish figure *includes*
 VAT, so divide it by 1.25 before entering it — 45.00 öre published is 36.00 öre here. Enter the
 published number and VAT gets applied to it twice.
 
-Two things this cannot be:
+Three things this cannot be:
 
 - **It is not your bill.** Fixed monthly charges — grid subscription, supplier fee — are not per
   kWh and have nowhere to go in this model. What you get is an accurate *variable* cost.
